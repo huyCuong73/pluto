@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// các methods tính toán thuần tuý của CPU
+// Các method tính toán CPU thuần tuý
 
 type TxProcessor struct {
 	chainID *big.Int
@@ -22,7 +22,7 @@ func NewTxProcessor(chainID int64) *TxProcessor {
 }
 
 
-// giải mã RLP bytes thành ETH transaction
+// Giải mã RLP bytes thành transaction
 func (tp *TxProcessor) DecodeTx(txBytes []byte) (*types.Transaction, error) {
 	tx := &types.Transaction{}
 	if err := tx.UnmarshalBinary(txBytes); err != nil {
@@ -32,11 +32,10 @@ func (tp *TxProcessor) DecodeTx(txBytes []byte) (*types.Transaction, error) {
 }
 
 
-//lấy địa chỉ người gửi từ transaction (msg.sender)
+// Lấy địa chỉ người gửi (sender)
 func (tp *TxProcessor) RecoverSender(tx *types.Transaction) (common.Address,error){
 
-	// Sử dụng EIP-155 Signer nếu tx có bảo vệ replay attack
-    // Hoặc dùng HomesteadSigner cho tx cũ (ít dùng)
+	// Dùng EIP-155 Signer hoặc HomesteadSigner
 	signer := types.LatestSignerForChainID(tp.chainID)
 
 	sender, err := types.Sender(signer, tx)

@@ -1,4 +1,4 @@
-// Đây là lớp wrapper cho PebbleDB để tuân thủ interface dbm.DB của CometBFT
+// PebbleDB wrapper tuân thủ interface dbm.DB của CometBFT
 
 
 package store
@@ -11,19 +11,19 @@ import (
 	dbm "github.com/cometbft/cometbft-db"
 )
 
-// PebbleDB implement dbm.DB interface của CometBFT
+// PebbleDB implements dbm.DB
 type PebbleDB struct {
 	db *pebble.DB
 }
 
-// NewPebbleDB tạo instance mới
+// NewPebbleDB khởi tạo PebbleDB
 func NewPebbleDB(name string, dir string) (*PebbleDB, error) {
 	dbPath := fmt.Sprintf("%s/%s.db", dir, name)
 	
-	// Cấu hình tối ưu cho Blockchain (Write Heavy)
+	// Tối ưu ghi blockchain
 	opts := &pebble.Options{
-		Cache:        pebble.NewCache(512 << 20), // 512MB Cache
-		MemTableSize: 64 << 20,                   // 64MB Memtable
+		Cache:        pebble.NewCache(512 << 20), // 512MB cache
+		MemTableSize: 64 << 20,                   // 64MB memtable
 	}
 
 	db, err := pebble.Open(dbPath, opts)
@@ -33,16 +33,16 @@ func NewPebbleDB(name string, dir string) (*PebbleDB, error) {
 	return &PebbleDB{db: db}, nil
 }
 
-// Get lấy value từ key
+// Get đọc value từ key
 func (pdb *PebbleDB) Get(key []byte) ([]byte, error) {
 	val, closer, err := pdb.db.Get(key)
 	if err == pebble.ErrNotFound {
-		return nil, nil // Return nil nếu không tìm thấy (theo chuẩn CometBFT)
+		return nil, nil // Trả về nil nếu ko tìm thấy (CometBFT spec)
 	}
 	if err != nil {
 		return nil, err
 	}
-	// Copy data vì closer sẽ đóng khi return
+	// Copy data trước khi close
 	ret := make([]byte, len(val))
 	copy(ret, val)
 	closer.Close()
@@ -62,22 +62,22 @@ func (pdb *PebbleDB) Has(key []byte) (bool, error) {
 	return true, nil
 }
 
-// Set lưu key-value
+// Set ghi key-value
 func (pdb *PebbleDB) Set(key, value []byte) error {
 	return pdb.db.Set(key, value, pebble.Sync)
 }
 
-// SetSync (tương tự Set trong Pebble với SyncOptions)
+// SetSync đồng bộ
 func (pdb *PebbleDB) SetSync(key, value []byte) error {
 	return pdb.db.Set(key, value, pebble.Sync)
 }
 
-// Delete xóa key
+// Delete xoá key
 func (pdb *PebbleDB) Delete(key []byte) error {
 	return pdb.db.Delete(key, pebble.Sync)
 }
 
-// DeleteSync xóa key đồng bộ
+// DeleteSync xoá key đồng bộ
 func (pdb *PebbleDB) DeleteSync(key []byte) error {
 	return pdb.db.Delete(key, pebble.Sync)
 }
@@ -87,25 +87,25 @@ func (pdb *PebbleDB) Close() error {
 	return pdb.db.Close()
 }
 
-// NewBatch tạo transaction batch
+// NewBatch tạo batch
 func (pdb *PebbleDB) NewBatch() dbm.Batch {
 	return &PebbleBatch{batch: pdb.db.NewBatch()}
 }
 
-// Print in thống kê (implement cho đủ interface)
+// Print in metrics
 func (pdb *PebbleDB) Print() error {
 	fmt.Println(pdb.db.Metrics().String())
 	return nil
 }
 
-// Stats trả về thống kê
+// Stats trả về metrics
 func (pdb *PebbleDB) Stats() map[string]string {
 	return map[string]string{
 		"metrics": pdb.db.Metrics().String(),
 	}
 }
 
-// Iterator returns an iterator over a domain of keys in ascending order
+// Iterator duyệt key tăng dần
 func (pdb *PebbleDB) Iterator(start, end []byte) (dbm.Iterator, error) {
 	iter, err := pdb.db.NewIter(&pebble.IterOptions{
 		LowerBound: start,
@@ -118,7 +118,7 @@ func (pdb *PebbleDB) Iterator(start, end []byte) (dbm.Iterator, error) {
 	return &pebbleIterator{iter: iter, start: start, end: end, isReverse: false, isInvalid: false}, nil
 }
 
-// ReverseIterator returns an iterator over a domain of keys in descending order
+// ReverseIterator duyệt key giảm dần
 func (pdb *PebbleDB) ReverseIterator(start, end []byte) (dbm.Iterator, error) {
 	iter, err := pdb.db.NewIter(&pebble.IterOptions{
 		LowerBound: start,
@@ -131,12 +131,12 @@ func (pdb *PebbleDB) ReverseIterator(start, end []byte) (dbm.Iterator, error) {
 	return &pebbleIterator{iter: iter, start: start, end: end, isReverse: true, isInvalid: false}, nil
 }
 
-// Compact compacts the database in the given key range
+// Compact dọn dẹp DB
 func (pdb *PebbleDB) Compact(start, end []byte) error {
 	return pdb.db.Compact(start, end, true)
 }
 
-// --- Iterator Implementation ---
+// Iterator
 
 type pebbleIterator struct {
 	iter      *pebble.Iterator
@@ -146,12 +146,12 @@ type pebbleIterator struct {
 	isInvalid bool
 }
 
-// Domain returns the start (inclusive) and end (exclusive) limits of the iterator
+// Domain trả về bounds [start, end)
 func (itr *pebbleIterator) Domain() ([]byte, []byte) {
 	return itr.start, itr.end
 }
 
-// Valid returns whether the current iterator is valid
+// Valid kiểm tra iterator hợp lệ
 func (itr *pebbleIterator) Valid() bool {
 	if itr.isInvalid {
 		return false
@@ -159,7 +159,7 @@ func (itr *pebbleIterator) Valid() bool {
 	return itr.iter.Valid()
 }
 
-// Next moves the iterator to the next key in the database
+// Next chuyển sang key tiếp theo
 func (itr *pebbleIterator) Next() {
 	if itr.isInvalid {
 		return
@@ -171,42 +171,42 @@ func (itr *pebbleIterator) Next() {
 	}
 }
 
-// Key returns the key at the current position
+// Key trả về key hiện tại
 func (itr *pebbleIterator) Key() []byte {
 	if !itr.Valid() {
 		return nil
 	}
 	key := itr.iter.Key()
-	// Make a copy since pebble iterator keys are only valid until the next call
+	// Copy key vì key chỉ valid đến call tiếp theo
 	keyCopy := make([]byte, len(key))
 	copy(keyCopy, key)
 	return keyCopy
 }
 
-// Value returns the value at the current position
+// Value trả về value hiện tại
 func (itr *pebbleIterator) Value() []byte {
 	if !itr.Valid() {
 		return nil
 	}
 	val := itr.iter.Value()
-	// Make a copy since pebble iterator values are only valid until the next call
+	// Copy value vì value chỉ valid đến call tiếp theo
 	valCopy := make([]byte, len(val))
 	copy(valCopy, val)
 	return valCopy
 }
 
-// Error returns any accumulated error
+// Error trả về lỗi nếu có
 func (itr *pebbleIterator) Error() error {
 	return itr.iter.Error()
 }
 
-// Close closes the iterator
+// Close đóng iterator
 func (itr *pebbleIterator) Close() error {
 	itr.isInvalid = true
 	return itr.iter.Close()
 }
 
-// --- Batch Implementation ---
+// Batch
 
 type PebbleBatch struct {
 	batch *pebble.Batch

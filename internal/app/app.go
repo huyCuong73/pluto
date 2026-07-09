@@ -25,7 +25,7 @@ const (
 	AppVersion uint64 = 1
 )
 
-// chainID — Sử dụng 1 constant để tránh hardcode rải rác
+// Chain ID
 var chainID = big.NewInt(1)
 
 type App struct {
@@ -42,10 +42,10 @@ type GenesisState struct {
 }
 
 type GenesisAccount struct {
-	Balance string `json:"balance"` // Dùng string để chứa số lớn (BigInt)
+	Balance string `json:"balance"` // Dùng string cho BigInt
 }
 
-// CHạy 1 lần khi BlockHeight = 0
+// Chạy một lần khi block height = 0
 func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abci.InitChainResponse, error) {
 	app.logger.Info("Initializing chain with genesis data...")
 
@@ -85,7 +85,7 @@ func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abc
 		return nil, fmt.Errorf("failed to commit genesis state: %w", err)
 	}
 
-	// Tính AppHash cho genesis block
+	// Tính AppHash cho genesis
 	app.appHash = stateDB.ComputeAppHash()
 
 	return &abci.InitChainResponse{
@@ -99,11 +99,11 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to create PebbleDB: %w", err)
 	}
 
-	// Khôi phục trạng thái từ DB khi khởi động lại
+	// Khôi phục state khi restart
 	currentHeight := int64(0)
 	appHash := []byte{}
 
-	// Đọc height từ DB
+	// Đọc height
 	heightBytes, err := db.Get([]byte("height"))
 	if err == nil && len(heightBytes) > 0 {
 		if h, err := strconv.ParseInt(string(heightBytes), 10, 64); err == nil {
@@ -112,7 +112,7 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		}
 	}
 
-	// Đọc appHash từ DB
+	// Đọc appHash
 	savedHash, err := db.Get([]byte("appHash"))
 	if err == nil && len(savedHash) > 0 {
 		appHash = savedHash
@@ -127,8 +127,8 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 	}, nil
 }
 
-// Info: return current state when restarting node
-// Handshake ban đầu
+// Info: trả về state hiện tại khi restart node
+// Handshake
 func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResponse, error) {
 	app.logger.Info("CometBFT Handshake received",
 		"comet_version", req.Version,
@@ -143,20 +143,14 @@ func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResp
 	}, nil
 }
 
-// Được gọi bởi proposal khi bắt đầu tạo block mới.
-// có thể chọn lọc, sắp xếp lại hoặc chèn thêm giao dịch vào Block.
-// Input: Giao dịch thô từ Mempool -> Output: Giao dịch sẽ nằm trong Block.
+// Gọi khi bắt đầu tạo block mới (chọn lọc/sắp xếp tx)
 func (app *App) PrepareProposal(_ context.Context, req *abci.PrepareProposalRequest) (*abci.PrepareProposalResponse, error) {
 	return &abci.PrepareProposalResponse{
 		Txs: req.Txs,
 	}, nil
 }
 
-// được gọi bởi tất cả validators.
-// Sau khi Proposer tạo xong Block và gửi đi khắp mạng lưới,
-// các Validators sẽ nhận được Block đó.
-// Trước khi bỏ phiếu "Đồng ý" (Precommit), họ gọi hàm này để hỏi ứng dụng xem Block này có "ngon" không.
-// Nếu trả về REJECT, Validator sẽ vote nil (từ chối block này).
+// Validator kiểm tra block trước khi vote precommit
 func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequest) (*abci.ProcessProposalResponse, error) {
 	for _, tx := range req.Txs {
 		if len(tx) == 0 {
@@ -172,14 +166,14 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 	}, nil
 }
 
-// FinalizeBlock — Xử lý tất cả giao dịch trong block
+// FinalizeBlock xử lý các tx trong block
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
 	txResults := make([]*abci.ExecTxResult, len(req.Txs))
 
-	// 1. Tạo StateDB mới cho block này
+	// Tạo StateDB mới cho block
 	stateDB := evm.NewPebbleStateDB(app.db)
 
-	// 2. Cấu hình Chain — tất cả EIPs active từ block 0
+	// Cấu hình Chain, kích hoạt toàn bộ EIP từ block 0
 	chainConfig := params.ChainConfig{
 		ChainID:             chainID,
 		HomesteadBlock:      big.NewInt(0),
@@ -197,7 +191,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		LondonBlock:         big.NewInt(0),
 	}
 
-	// 3. Block Context
+	// Block Context
 	blockContext := vm.BlockContext{
 		CanTransfer: core.CanTransfer,
 		Transfer:    core.Transfer,
@@ -210,27 +204,27 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		GasLimit:    30000000,
 	}
 
-	// 4. Khởi tạo EVM (1 lần cho cả block)
+	// Khởi tạo EVM cho cả block
 	vmenv := vm.NewEVM(blockContext, stateDB, &chainConfig, vm.Config{})
 
 	signer := types.LatestSignerForChainID(chainID)
 
 	for i, txBytes := range req.Txs {
-		// Decode
+		// Decode tx
 		ethTx, err := app.txProcessor.DecodeTx(txBytes)
 		if err != nil {
 			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("decode error: %v", err)}
 			continue
 		}
 
-		// Recover sender
+		// Lấy sender
 		msg, err := core.TransactionToMessage(ethTx, signer, big.NewInt(0))
 		if err != nil {
 			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid signature: %v", err)}
 			continue
 		}
 
-		// Nonce check
+		// Kiểm tra nonce
 		expectedNonce := stateDB.GetNonce(msg.From)
 		if msg.Nonce != expectedNonce {
 			txResults[i] = &abci.ExecTxResult{
@@ -240,24 +234,24 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 			continue
 		}
 
-		// Snapshot trước khi thực thi -> revert nếu tx fail
+		// Snapshot trước khi chạy, revert nếu lỗi
 		snapID := stateDB.Snapshot()
 
 		// Set Tx Context 
 		txContext := core.NewEVMTxContext(msg)
 		vmenv.SetTxContext(txContext)
 
-		// Increment nonce TRƯỚC khi thực thi (Ethereum convention) 
+		// Tăng nonce trước khi chạy (Ethereum convention) 
 		stateDB.SetNonce(msg.From, msg.Nonce+1, 0)
 
-		//  Execute 
+		// Thực thi tx 
 		var ret []byte
 		var leftOverGas uint64
 		var errExec error
 
 		value, _ := uint256.FromBig(msg.Value)
 		if msg.To == nil {
-			// Contract Creation
+			// Tạo contract
 			ret, _, leftOverGas, errExec = vmenv.Create(
 				msg.From,
 				msg.Data,
@@ -265,7 +259,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 				value,
 			)
 		} else {
-			// Transaction Call
+			// Gọi contract
 			ret, leftOverGas, errExec = vmenv.Call(
 				msg.From,
 				*msg.To,
@@ -276,13 +270,13 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		}
 		gasUsed := msg.GasLimit - leftOverGas
 
-		// --- Xử lý kết quả ---
+		// Xử lý kết quả
 		code := uint32(0)
 		if errExec != nil {
 			code = 1
-			// Revert state nếu execution fail
+			// Revert state nếu thực thi lỗi
 			stateDB.RevertToSnapshot(snapID)
-			// Nonce vẫn tăng ngay cả khi tx fail (Ethereum convention)
+			// Nonce vẫn tăng khi tx lỗi (Ethereum convention)
 			stateDB.SetNonce(msg.From, msg.Nonce+1, 0)
 		}
 
@@ -301,12 +295,12 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		}
 	}
 
-	// --- Commit state xuống đĩa ---
+	// Commit state
 	if err := stateDB.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit stateDB: %w", err)
 	}
 
-	// --- Tính AppHash thực sự ---
+	// Tính AppHash
 	newAppHash := stateDB.ComputeAppHash()
 	if newAppHash != nil {
 		app.appHash = newAppHash
@@ -320,7 +314,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	}, nil
 }
 
-// Commit — Lưu metadata xuống đĩa (block height + appHash)
+// Commit metadata (height + appHash)
 func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.CommitResponse, error) {
 	// Lưu height
 	k := []byte("height")
@@ -339,9 +333,9 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 	return &abci.CommitResponse{}, nil
 }
 
-// CheckTx — Kiểm tra giao dịch trước khi đưa vào Mempool
+// CheckTx kiểm tra tx trước khi vào Mempool
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
-	// 1. Decode tx
+	// Decode tx
 	_, err := app.txProcessor.DecodeTx(req.Tx)
 	if err != nil {
 		return &abci.CheckTxResponse{
@@ -350,7 +344,7 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
-	// 2. Verify signature (recover sender)
+	// Verify signature
 	ethTx, _ := app.txProcessor.DecodeTx(req.Tx)
 	_, err = app.txProcessor.RecoverSender(ethTx)
 	if err != nil {
@@ -360,8 +354,7 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
-	// Phase 1: Bỏ qua nonce/balance check trong CheckTx
-	// (FinalizeBlock sẽ kiểm tra chặt hơn)
+	// Bỏ qua nonce/balance check ở CheckTx (sẽ check kỹ ở FinalizeBlock)
 
 	return &abci.CheckTxResponse{Code: 0}, nil
 }

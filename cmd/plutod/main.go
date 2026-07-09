@@ -31,8 +31,7 @@ func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
 }
 
-// PebbleDBProvider: Inject Pebble vào CometBFT Core
-// cfg.DBProvider signature: func(*cfg.DBContext) (dbm.DB, error)
+// Pebble DB provider
 func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 	return store.NewPebbleDB(ctx.ID, ctx.Config.DBDir())
 }
@@ -43,31 +42,31 @@ func main() {
 		homeDir = os.ExpandEnv("$HOME/.plutod")
 	}
 
-	// 1. Setup Config
+	// Setup config
 	config := cfg.DefaultConfig()
 	config.SetRoot(homeDir)
 
-	// Ensure required directories exist before loading any files
+	// Đảm bảo thư mục tồn tại
 	for _, dir := range []string{config.DBDir(), filepath.Dir(config.NodeKeyFile()), filepath.Dir(config.PrivValidatorStateFile())} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			panic(fmt.Errorf("failed to create directory %s: %w", dir, err))
 		}
 	}
 
-	// 2. Setup Logger (CometBFT style)
+	// Setup Logger (CometBFT)
 	logger := cmtlog.NewTMLogger(cmtlog.NewSyncWriter(os.Stdout))
 	logger = logger.With("module", "main")
 
-	// Setup Logger cho App (Go Slog standard)
+	// Setup Logger cho App (Slog)
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// 3. Load Node Key & Validator Key
+	// Load Node & Validator Key
 	nodeKey, err := cmtp2p.LoadOrGenNodeKey(config.NodeKeyFile())
 	if err != nil {
 		panic(fmt.Errorf("failed to load node key: %w", err))
 	}
 
-	// In CometBFT v1.0.0, LoadOrGenFilePV returns (pv, error) and requires a key generator function
+	// Load/Gen validator key (CometBFT v1.0.0)
 	pv, err := cmtprivval.LoadOrGenFilePV(
 		config.PrivValidatorKeyFile(),
 		config.PrivValidatorStateFile(),
@@ -79,8 +78,7 @@ func main() {
 		panic(fmt.Errorf("failed to load or generate priv validator: %w", err))
 	}
 
-	// 4. Khởi tạo Application
-	// DB của App nằm riêng trong thư mục data/application.db
+	// Khởi tạo App (DB nằm trong data/)
 	appDBDir := filepath.Join(homeDir, "data")
 
 	myApp, err := app.NewApp(appDBDir, appLogger)
@@ -89,11 +87,11 @@ func main() {
 	}
 	defer myApp.Close()
 
-	// 5. Create context for node
+	// Context cho node
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 6. Khởi tạo Node
+	// Khởi tạo Node
 	node, err := cmtnode.NewNode(
 		ctx,
 		config,
@@ -101,7 +99,7 @@ func main() {
 		nodeKey,
 		cmtproxy.NewLocalClientCreator(myApp),
 		cmtnode.DefaultGenesisDocProviderFunc(config),
-		PebbleDBProvider, // <--- SỬ DỤNG PEBBLE Ở ĐÂY
+		PebbleDBProvider,
 		cmtnode.DefaultMetricsProvider(config.Instrumentation),
 		logger,
 	)
@@ -110,20 +108,20 @@ func main() {
 		panic(fmt.Errorf("failed to create node: %v", err))
 	}
 
-	// 7. Start Node
+	// Start Node
 	if err := node.Start(); err != nil {
 		panic(fmt.Errorf("failed to start node: %v", err))
 	}
 
 	logger.Info("Node Started", "home", homeDir)
 
-	// 8. Wait for Shutdown Signal
+	// Chờ tín hiệu shutdown
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
 	logger.Info("Stopping Node...")
-	cancel() // Cancel context to signal node to stop
+	cancel() // Dừng node
 	node.Stop()
 	node.Wait()
 }
