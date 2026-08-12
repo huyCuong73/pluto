@@ -86,7 +86,6 @@ type PebbleStateDB struct {
 	// Snapshot / Journal
 	journal   []journalEntry
 	snapshots []snapshot
-	nextRevID int
 
 	// Access list (EIP-2930)
 	accessList *accessList
@@ -567,8 +566,9 @@ func (s *PebbleStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 // --- Snapshot / Revert ---
 
 func (s *PebbleStateDB) Snapshot() int {
-	id := s.nextRevID
-	s.nextRevID++
+	// RevertToSnapshot indexes the snapshots slice with the returned ID, so the
+	// ID must be the slice index rather than a separate monotonic counter.
+	id := len(s.snapshots)
 	s.snapshots = append(s.snapshots, snapshot{
 		journalLen: len(s.journal),
 		refund:     s.refund,

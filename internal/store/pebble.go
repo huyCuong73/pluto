@@ -1,10 +1,10 @@
 // PebbleDB wrapper tuân thủ interface dbm.DB của CometBFT
 
-
 package store
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/cockroachdb/pebble"
@@ -18,15 +18,19 @@ type PebbleDB struct {
 
 // NewPebbleDB khởi tạo PebbleDB
 func NewPebbleDB(name string, dir string) (*PebbleDB, error) {
-	dbPath := fmt.Sprintf("%s/%s.db", dir, name)
-	
+	dbPath := filepath.Join(dir, name+".db")
+
 	// Tối ưu ghi blockchain
+	cache := pebble.NewCache(512 << 20)
 	opts := &pebble.Options{
-		Cache:        pebble.NewCache(512 << 20), // 512MB cache
-		MemTableSize: 64 << 20,                   // 64MB memtable
+		Cache:        cache,    // 512MB cache
+		MemTableSize: 64 << 20, // 64MB memtable
 	}
 
 	db, err := pebble.Open(dbPath, opts)
+	// pebble.Open retains its own cache reference. Release the creator's
+	// reference so repeated opens do not leak cache objects.
+	cache.Unref()
 	if err != nil {
 		return nil, err
 	}
