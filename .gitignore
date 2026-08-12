@@ -6,6 +6,11 @@
 /scripts
 
 /plutod
+# Pluto node homes created by `plutod init`. They contain local state and
+# validator/node private keys; never commit them.
+/node/
+/.plutod/
+
 *.exe
 *.exe~
 *.dll
