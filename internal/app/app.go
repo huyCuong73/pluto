@@ -2,31 +2,28 @@ package app
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
-
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"math/big"
-
-	abci "github.com/cometbft/cometbft/abci/types"
-	"github.com/huyCuong73/pluto/internal/evm"
-	"github.com/huyCuong73/pluto/internal/store"
 	"strconv"
 
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
+	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+	projectconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/huyCuong73/pluto/internal/evm"
+	"github.com/huyCuong73/pluto/internal/store"
 )
 
 const (
 	AppVersion uint64 = 1
 )
-
-// Chain ID
-var chainID = big.NewInt(1)
 
 type App struct {
 	abci.BaseApplication
@@ -35,10 +32,12 @@ type App struct {
 	currentHeight int64
 	appHash       []byte
 	txProcessor   *evm.TxProcessor
+	chainID       *big.Int
 }
 
 type GenesisState struct {
-	Alloc map[string]GenesisAccount `json:"alloc"`
+	EVMChainID int64                     `json:"evm_chain_id"`
+	Alloc      map[string]GenesisAccount `json:"alloc"`
 }
 
 type GenesisAccount struct {
@@ -61,16 +60,21 @@ func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abc
 	if err := json.Unmarshal(req.AppStateBytes, &genesisState); err != nil {
 		return nil, fmt.Errorf("failed to parse genesis state: %w", err)
 	}
+	if genesisState.EVMChainID != 0 && genesisState.EVMChainID != app.chainID.Int64() {
+		return nil, fmt.Errorf("genesis EVM chain ID %d does not match application chain ID %d", genesisState.EVMChainID, app.chainID.Int64())
+	}
 
 	stateDB := evm.NewPebbleStateDB(app.db)
 
 	for addrHex, acc := range genesisState.Alloc {
+		if !common.IsHexAddress(addrHex) {
+			return nil, fmt.Errorf("invalid genesis address %q", addrHex)
+		}
 		addr := common.HexToAddress(addrHex)
 
 		balance, ok := new(big.Int).SetString(acc.Balance, 10)
-		if !ok {
-			app.logger.Error("Invalid balance in genesis", "address", addrHex)
-			continue
+		if !ok || balance.Sign() < 0 {
+			return nil, fmt.Errorf("invalid genesis balance %q for address %s", acc.Balance, addrHex)
 		}
 
 		stateDB.AddBalanceBig(addr, balance)
@@ -94,6 +98,17 @@ func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abc
 }
 
 func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
+	return NewAppWithChainID(dbPath, logger, projectconfig.DefaultEVMChainID)
+}
+
+func NewAppWithChainID(dbPath string, logger *slog.Logger, evmChainID int64) (*App, error) {
+	if evmChainID <= 0 {
+		return nil, fmt.Errorf("EVM chain ID must be positive")
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
 	db, err := store.NewPebbleDB("pluto", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PebbleDB: %w", err)
@@ -105,25 +120,39 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 
 	// Đọc height
 	heightBytes, err := db.Get([]byte("height"))
-	if err == nil && len(heightBytes) > 0 {
-		if h, err := strconv.ParseInt(string(heightBytes), 10, 64); err == nil {
-			currentHeight = h
-			logger.Info("Restored state", "height", currentHeight)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to restore block height: %w", err)
+	}
+	if len(heightBytes) > 0 {
+		h, parseErr := strconv.ParseInt(string(heightBytes), 10, 64)
+		if parseErr != nil {
+			db.Close()
+			return nil, fmt.Errorf("invalid persisted block height %q: %w", heightBytes, parseErr)
 		}
+		currentHeight = h
+		logger.Info("Restored state", "height", currentHeight)
 	}
 
 	// Đọc appHash
 	savedHash, err := db.Get([]byte("appHash"))
-	if err == nil && len(savedHash) > 0 {
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to restore app hash: %w", err)
+	}
+	if len(savedHash) > 0 {
 		appHash = savedHash
 	}
+
+	chainID := big.NewInt(evmChainID)
 
 	return &App{
 		db:            db,
 		logger:        logger,
 		currentHeight: currentHeight,
 		appHash:       appHash,
-		txProcessor:   evm.NewTxProcessor(chainID.Int64()),
+		txProcessor:   evm.NewTxProcessor(evmChainID),
+		chainID:       chainID,
 	}, nil
 }
 
@@ -175,7 +204,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 
 	// Cấu hình Chain, kích hoạt toàn bộ EIP từ block 0
 	chainConfig := params.ChainConfig{
-		ChainID:             chainID,
+		ChainID:             app.chainID,
 		HomesteadBlock:      big.NewInt(0),
 		DAOForkBlock:        big.NewInt(0),
 		DAOForkSupport:      true,
@@ -196,7 +225,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		CanTransfer: core.CanTransfer,
 		Transfer:    core.Transfer,
 		GetHash:     func(n uint64) common.Hash { return common.Hash{} }, // TODO: Block hash cache
-		Coinbase:    common.Address{},                                     // TODO: Validator address
+		Coinbase:    common.Address{},                                    // TODO: Validator address
 		BlockNumber: big.NewInt(req.Height),
 		Time:        uint64(req.Time.Unix()),
 		Difficulty:  big.NewInt(0),
@@ -207,20 +236,20 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	// Khởi tạo EVM cho cả block
 	vmenv := vm.NewEVM(blockContext, stateDB, &chainConfig, vm.Config{})
 
-	signer := types.LatestSignerForChainID(chainID)
+	signer := types.LatestSignerForChainID(app.chainID)
 
 	for i, txBytes := range req.Txs {
 		// Decode tx
 		ethTx, err := app.txProcessor.DecodeTx(txBytes)
 		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("decode error: %v", err)}
+			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidEncoding, Codespace: Codespace, Log: fmt.Sprintf("decode error: %v", err)}
 			continue
 		}
 
 		// Lấy sender
 		msg, err := core.TransactionToMessage(ethTx, signer, big.NewInt(0))
 		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid signature: %v", err)}
+			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidSignature, Codespace: Codespace, Log: fmt.Sprintf("invalid signature: %v", err)}
 			continue
 		}
 
@@ -228,8 +257,9 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		expectedNonce := stateDB.GetNonce(msg.From)
 		if msg.Nonce != expectedNonce {
 			txResults[i] = &abci.ExecTxResult{
-				Code: 1,
-				Log:  fmt.Sprintf("nonce mismatch: expected %d, got %d", expectedNonce, msg.Nonce),
+				Code:      CodeNonceMismatch,
+				Codespace: Codespace,
+				Log:       fmt.Sprintf("nonce mismatch: expected %d, got %d", expectedNonce, msg.Nonce),
 			}
 			continue
 		}
@@ -237,14 +267,14 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		// Snapshot trước khi chạy, revert nếu lỗi
 		snapID := stateDB.Snapshot()
 
-		// Set Tx Context 
+		// Set Tx Context
 		txContext := core.NewEVMTxContext(msg)
 		vmenv.SetTxContext(txContext)
 
-		// Tăng nonce trước khi chạy (Ethereum convention) 
+		// Tăng nonce trước khi chạy (Ethereum convention)
 		stateDB.SetNonce(msg.From, msg.Nonce+1, 0)
 
-		// Thực thi tx 
+		// Thực thi tx
 		var ret []byte
 		var leftOverGas uint64
 		var errExec error
@@ -271,9 +301,9 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		gasUsed := msg.GasLimit - leftOverGas
 
 		// Xử lý kết quả
-		code := uint32(0)
+		code := CodeOK
 		if errExec != nil {
-			code = 1
+			code = CodeExecutionFailed
 			// Revert state nếu thực thi lỗi
 			stateDB.RevertToSnapshot(snapID)
 			// Nonce vẫn tăng khi tx lỗi (Ethereum convention)
@@ -290,8 +320,10 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		)
 
 		txResults[i] = &abci.ExecTxResult{
-			Code:    code,
-			GasUsed: int64(gasUsed),
+			Code:      code,
+			Codespace: Codespace,
+			GasUsed:   int64(gasUsed),
+			Log:       executionLog(errExec),
 		}
 	}
 
@@ -336,31 +368,35 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 // CheckTx kiểm tra tx trước khi vào Mempool
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
 	// Decode tx
-	_, err := app.txProcessor.DecodeTx(req.Tx)
+	ethTx, err := app.txProcessor.DecodeTx(req.Tx)
 	if err != nil {
 		return &abci.CheckTxResponse{
-			Code: 1,
-			Log:  fmt.Sprintf("invalid tx encoding: %v", err),
+			Code:      CodeInvalidEncoding,
+			Codespace: Codespace,
+			Log:       fmt.Sprintf("invalid tx encoding: %v", err),
 		}, nil
 	}
 
 	// Verify signature
-	ethTx, _ := app.txProcessor.DecodeTx(req.Tx)
 	_, err = app.txProcessor.RecoverSender(ethTx)
 	if err != nil {
 		return &abci.CheckTxResponse{
-			Code: 1,
-			Log:  fmt.Sprintf("invalid signature: %v", err),
+			Code:      CodeInvalidSignature,
+			Codespace: Codespace,
+			Log:       fmt.Sprintf("invalid signature: %v", err),
 		}, nil
 	}
 
 	// Bỏ qua nonce/balance check ở CheckTx (sẽ check kỹ ở FinalizeBlock)
 
-	return &abci.CheckTxResponse{Code: 0}, nil
+	return &abci.CheckTxResponse{Code: CodeOK, Codespace: Codespace}, nil
 }
 
-func (app *App) Query(ctx context.Context, req *abci.QueryRequest) (*abci.QueryResponse, error) {
-	return &abci.QueryResponse{Code: 0}, nil
+func executionLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (app *App) Close() error {
