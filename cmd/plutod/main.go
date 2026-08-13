@@ -25,6 +25,7 @@ import (
 	"github.com/huyCuong73/pluto/internal/app"
 	projectconfig "github.com/huyCuong73/pluto/internal/config"
 	"github.com/huyCuong73/pluto/internal/store"
+	plutotx "github.com/huyCuong73/pluto/internal/tx"
 )
 
 func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
@@ -129,7 +130,17 @@ func startNodeWithConfig(ctx context.Context, homeDir string, configure func(*cf
 		return fmt.Errorf("load private validator: %w", err)
 	}
 
-	myApp, err := app.NewAppWithChainID(filepath.Join(homeDir, "data"), appLogger, projectconfig.DefaultEVMChainID)
+	transactionValidator, err := plutotx.NewECDSAValidator(projectconfig.DefaultEVMChainID)
+	if err != nil {
+		return fmt.Errorf("create ECDSA transaction validator: %w", err)
+	}
+
+	myApp, err := app.NewAppWithComponents(
+		filepath.Join(homeDir, "data"),
+		appLogger,
+		projectconfig.DefaultEVMChainID,
+		transactionValidator,
+	)
 	if err != nil {
 		return fmt.Errorf("create application: %w", err)
 	}

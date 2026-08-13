@@ -12,13 +12,13 @@ import (
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	projectconfig "github.com/huyCuong73/pluto/internal/config"
 	"github.com/huyCuong73/pluto/internal/evm"
 	"github.com/huyCuong73/pluto/internal/store"
+	plutotx "github.com/huyCuong73/pluto/internal/tx"
 )
 
 const (
@@ -31,7 +31,7 @@ type App struct {
 	logger        *slog.Logger
 	currentHeight int64
 	appHash       []byte
-	txProcessor   *evm.TxProcessor
+	txValidator   plutotx.TransactionValidator
 	chainID       *big.Int
 }
 
@@ -102,8 +102,22 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 }
 
 func NewAppWithChainID(dbPath string, logger *slog.Logger, evmChainID int64) (*App, error) {
+	validator, err := plutotx.NewECDSAValidator(evmChainID)
+	if err != nil {
+		return nil, fmt.Errorf("create default transaction validator: %w", err)
+	}
+	return NewAppWithComponents(dbPath, logger, evmChainID, validator)
+}
+
+// NewAppWithComponents is the application composition boundary. The caller
+// selects a transaction validator while consensus, EVM execution and storage
+// remain unchanged. A future hybrid ML-DSA validator will be plugged in here.
+func NewAppWithComponents(dbPath string, logger *slog.Logger, evmChainID int64, validator plutotx.TransactionValidator) (*App, error) {
 	if evmChainID <= 0 {
 		return nil, fmt.Errorf("EVM chain ID must be positive")
+	}
+	if validator == nil {
+		return nil, fmt.Errorf("transaction validator is required")
 	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -151,7 +165,7 @@ func NewAppWithChainID(dbPath string, logger *slog.Logger, evmChainID int64) (*A
 		logger:        logger,
 		currentHeight: currentHeight,
 		appHash:       appHash,
-		txProcessor:   evm.NewTxProcessor(evmChainID),
+		txValidator:   validator,
 		chainID:       chainID,
 	}, nil
 }
@@ -181,9 +195,9 @@ func (app *App) PrepareProposal(_ context.Context, req *abci.PrepareProposalRequ
 
 // Validator kiểm tra block trước khi vote precommit
 func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequest) (*abci.ProcessProposalResponse, error) {
-	for _, tx := range req.Txs {
-		if len(tx) == 0 {
-			app.logger.Error("Rejecting block: contains empty transaction")
+	for index, rawTx := range req.Txs {
+		if _, err := app.txValidator.Validate(rawTx); err != nil {
+			app.logger.Error("Rejecting block: invalid transaction", "tx_index", index, "error", err)
 			return &abci.ProcessProposalResponse{
 				Status: abci.PROCESS_PROPOSAL_STATUS_REJECT,
 			}, nil
@@ -236,20 +250,21 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	// Khởi tạo EVM cho cả block
 	vmenv := vm.NewEVM(blockContext, stateDB, &chainConfig, vm.Config{})
 
-	signer := types.LatestSignerForChainID(app.chainID)
-
 	for i, txBytes := range req.Txs {
-		// Decode tx
-		ethTx, err := app.txProcessor.DecodeTx(txBytes)
+		// Validate the selected wire format and authentication policy.
+		validatedTx, err := app.txValidator.Validate(txBytes)
 		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidEncoding, Codespace: Codespace, Log: fmt.Sprintf("decode error: %v", err)}
+			txResults[i] = validationExecResult(err)
 			continue
 		}
 
-		// Lấy sender
-		msg, err := core.TransactionToMessage(ethTx, signer, big.NewInt(0))
-		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidSignature, Codespace: Codespace, Log: fmt.Sprintf("invalid signature: %v", err)}
+		msg := validatedTx.Message
+		if msg == nil {
+			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidEncoding, Codespace: Codespace, Log: "transaction validator returned a nil EVM message"}
+			continue
+		}
+		if msg.From != validatedTx.Sender {
+			txResults[i] = &abci.ExecTxResult{Code: CodeInvalidSignature, Codespace: Codespace, Log: "validated sender does not match EVM sender"}
 			continue
 		}
 
@@ -367,29 +382,39 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 
 // CheckTx kiểm tra tx trước khi vào Mempool
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
-	// Decode tx
-	ethTx, err := app.txProcessor.DecodeTx(req.Tx)
+	_, err := app.txValidator.Validate(req.Tx)
 	if err != nil {
 		return &abci.CheckTxResponse{
-			Code:      CodeInvalidEncoding,
+			Code:      validationCode(err),
 			Codespace: Codespace,
-			Log:       fmt.Sprintf("invalid tx encoding: %v", err),
-		}, nil
-	}
-
-	// Verify signature
-	_, err = app.txProcessor.RecoverSender(ethTx)
-	if err != nil {
-		return &abci.CheckTxResponse{
-			Code:      CodeInvalidSignature,
-			Codespace: Codespace,
-			Log:       fmt.Sprintf("invalid signature: %v", err),
+			Log:       err.Error(),
 		}, nil
 	}
 
 	// Bỏ qua nonce/balance check ở CheckTx (sẽ check kỹ ở FinalizeBlock)
 
 	return &abci.CheckTxResponse{Code: CodeOK, Codespace: Codespace}, nil
+}
+
+func validationExecResult(err error) *abci.ExecTxResult {
+	return &abci.ExecTxResult{
+		Code:      validationCode(err),
+		Codespace: Codespace,
+		Log:       err.Error(),
+	}
+}
+
+func validationCode(err error) uint32 {
+	switch plutotx.FailureOf(err) {
+	case plutotx.FailureEncoding:
+		return CodeInvalidEncoding
+	case plutotx.FailurePQC:
+		return CodeInvalidPQC
+	case plutotx.FailureAuthentication, plutotx.FailureUnknown:
+		return CodeInvalidSignature
+	default:
+		return CodeInvalidSignature
+	}
 }
 
 func executionLog(err error) string {
