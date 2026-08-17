@@ -3,6 +3,7 @@ module github.com/huyCuong73/pluto
 go 1.24.1
 
 require (
+	github.com/cloudflare/circl v1.6.3
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/cometbft/cometbft v1.0.0
 	github.com/cometbft/cometbft-db v1.0.1
