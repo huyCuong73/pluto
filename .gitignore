@@ -1,16 +1,18 @@
+# Tài liệu local không đưa lên repository theo quy ước hiện tại.
+/docs/
+/tailieu/
 
-/docs
-/.agents
-/.vscode
-/build
-/scripts
+# Cấu hình IDE/agent chỉ có ý nghĩa trên máy cá nhân.
+/.agents/
+/.vscode/
+/.idea/
 
+# Binary và artifact build: luôn có thể tạo lại từ source.
+/build/
+/dist/
+/bin/
 /plutod
-# Pluto node homes created by `plutod init`. They contain local state and
-# validator/node private keys; never commit them.
-/node/
-/.plutod/
-
+/plutod.exe
 *.exe
 *.exe~
 *.dll
@@ -19,11 +21,48 @@
 *.test
 *.out
 *.prof
+coverage.out
+coverage.*
+*.coverprofile
 
+# Pluto node homes chứa database, validator key, node key và consensus state.
+/node/
+/node-*/
+/.plutod/
 
+# PQC key/envelope sinh cục bộ. Public key có thể công khai nhưng vẫn là
+/pqc-public.key
+/pqc-private.key
+/*-pqc-public.key
+/*-pqc-private.key
+*.hybrid
+
+# Các định dạng secret/keystore phổ biến.
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mnemonic
+*.seed
+/keystore/
+/wallets/
+
+# Database và log runtime.
 *.db/
 *.db
+*.log
 
+# Biến môi trường local; chỉ file mẫu không chứa secret được phép commit.
 .env
 .env.*
 !.env.example
+
+# Go workspace và file tạm theo máy phát triển.
+go.work
+go.work.sum
+*.tmp
+*.bak
+*~
+.DS_Store
+Thumbs.db
