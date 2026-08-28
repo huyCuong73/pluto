@@ -195,3 +195,42 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) {
 	return 0, fmt.Errorf("entropy unavailable")
 }
+
+func BenchmarkMLDSA65Sign(b *testing.B) {
+	scheme := NewMLDSA65()
+	publicKey, privateKey, err := scheme.GenerateKey(bytes.NewReader(bytes.Repeat([]byte{0x5a}, 64)))
+	if err != nil {
+		b.Fatalf("generate key pair: %v", err)
+	}
+	_ = publicKey
+	message := bytes.Repeat([]byte{0x42}, 256)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(message)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := scheme.Sign(privateKey, message, testContext); err != nil {
+			b.Fatalf("sign: %v", err)
+		}
+	}
+}
+
+func BenchmarkMLDSA65Verify(b *testing.B) {
+	scheme := NewMLDSA65()
+	publicKey, privateKey, err := scheme.GenerateKey(bytes.NewReader(bytes.Repeat([]byte{0x6b}, 64)))
+	if err != nil {
+		b.Fatalf("generate key pair: %v", err)
+	}
+	message := bytes.Repeat([]byte{0x42}, 256)
+	signature, err := scheme.Sign(privateKey, message, testContext)
+	if err != nil {
+		b.Fatalf("sign fixture: %v", err)
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(message)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := scheme.Verify(publicKey, message, testContext, signature); err != nil {
+			b.Fatalf("verify: %v", err)
+		}
+	}
+}
