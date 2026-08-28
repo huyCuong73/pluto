@@ -20,9 +20,12 @@ import (
 
 	"github.com/huyCuong73/pluto/internal/app"
 	projectconfig "github.com/huyCuong73/pluto/internal/config"
+	plutotx "github.com/huyCuong73/pluto/internal/tx"
 )
 
 type allocations map[string]app.GenesisAccount
+
+type pqcKeyBindings map[string]string
 
 func (a *allocations) String() string {
 	return fmt.Sprint(map[string]app.GenesisAccount(*a))
@@ -45,17 +48,48 @@ func (a *allocations) Set(value string) error {
 	return nil
 }
 
+func (b *pqcKeyBindings) String() string {
+	return fmt.Sprint(map[string]string(*b))
+}
+
+func (b *pqcKeyBindings) Set(value string) error {
+	addressText, hashText, ok := strings.Cut(value, "=")
+	if !ok || !common.IsHexAddress(addressText) {
+		return fmt.Errorf("PQC key binding must be ADDRESS=SHA256_HEX with a valid EVM address")
+	}
+	hash, err := plutotx.ParsePQKeyHashHex(hashText)
+	if err != nil {
+		return err
+	}
+	address := common.HexToAddress(addressText).Hex()
+	if _, exists := (*b)[address]; exists {
+		return fmt.Errorf("duplicate PQC key binding for %s", address)
+	}
+	(*b)[address] = hash.Hex()
+	return nil
+}
+
 func runInit(args []string) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	homeDir := flags.String("home", defaultHomeDir(), "path to the Pluto home directory")
 	chainID := flags.String("chain-id", projectconfig.DefaultCometChainID, "CometBFT chain ID")
+	transactionPolicy := flags.String("tx-policy", projectconfig.TransactionPolicyECDSA, "transaction policy: ecdsa, hybrid-mldsa65 or pqc-opt-in-mldsa65")
 	alloc := allocations{}
+	pqcKeys := pqcKeyBindings{}
 	flags.Var(&alloc, "alloc", "genesis allocation ADDRESS=WEI; may be repeated")
+	flags.Var(&pqcKeys, "pqc-key", "PQC key binding ADDRESS=SHA256_HEX; may be repeated")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected init arguments: %v", flags.Args())
+	}
+	policy, err := projectconfig.NormalizeTransactionPolicy(*transactionPolicy)
+	if err != nil {
+		return err
+	}
+	if (policy == projectconfig.TransactionPolicyHybridMLDSA65 || policy == projectconfig.TransactionPolicyPQCOptInMLDSA65) && len(pqcKeys) == 0 {
+		return fmt.Errorf("transaction policy %s requires at least one --pqc-key binding", policy)
 	}
 
 	config := cfg.DefaultConfig().SetRoot(*homeDir)
@@ -94,8 +128,10 @@ func runInit(args []string) error {
 	}
 
 	appState, err := json.Marshal(app.GenesisState{
-		EVMChainID: projectconfig.DefaultEVMChainID,
-		Alloc:      alloc,
+		EVMChainID:        projectconfig.DefaultEVMChainID,
+		TransactionPolicy: policy,
+		Alloc:             alloc,
+		PQCKeys:           pqcKeys,
 	})
 	if err != nil {
 		return fmt.Errorf("encode application genesis: %w", err)
@@ -123,6 +159,8 @@ func runInit(args []string) error {
 	fmt.Printf("Initialized Pluto home at %s\n", *homeDir)
 	fmt.Printf("CometBFT chain ID: %s\n", genesis.ChainID)
 	fmt.Printf("EVM chain ID: %d\n", projectconfig.DefaultEVMChainID)
+	fmt.Printf("Transaction policy: %s\n", policy)
 	fmt.Printf("Genesis accounts: %d\n", len(alloc))
+	fmt.Printf("PQC key bindings: %d\n", len(pqcKeys))
 	return nil
 }

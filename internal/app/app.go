@@ -36,8 +36,10 @@ type App struct {
 }
 
 type GenesisState struct {
-	EVMChainID int64                     `json:"evm_chain_id"`
-	Alloc      map[string]GenesisAccount `json:"alloc"`
+	EVMChainID        int64                     `json:"evm_chain_id"`
+	TransactionPolicy string                    `json:"transaction_policy"`
+	Alloc             map[string]GenesisAccount `json:"alloc"`
+	PQCKeys           map[string]string         `json:"pqc_keys,omitempty"`
 }
 
 type GenesisAccount struct {
@@ -62,6 +64,16 @@ func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abc
 	}
 	if genesisState.EVMChainID != 0 && genesisState.EVMChainID != app.chainID.Int64() {
 		return nil, fmt.Errorf("genesis EVM chain ID %d does not match application chain ID %d", genesisState.EVMChainID, app.chainID.Int64())
+	}
+	transactionPolicy, err := projectconfig.NormalizeTransactionPolicy(genesisState.TransactionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid genesis transaction policy: %w", err)
+	}
+	if (transactionPolicy == projectconfig.TransactionPolicyHybridMLDSA65 || transactionPolicy == projectconfig.TransactionPolicyPQCOptInMLDSA65) && len(genesisState.PQCKeys) == 0 {
+		return nil, fmt.Errorf("ML-DSA-65 transaction policy requires at least one genesis PQ key binding")
+	}
+	if _, err := plutotx.NewStaticPQKeyRegistryFromHex(genesisState.PQCKeys); err != nil {
+		return nil, fmt.Errorf("invalid genesis PQ key registry: %w", err)
 	}
 
 	stateDB := evm.NewPebbleStateDB(app.db)
