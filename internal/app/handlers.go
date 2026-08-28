@@ -13,6 +13,7 @@ import (
 const (
 	QueryBalance = "/balance"
 	QueryNonce   = "/nonce"
+	QueryCode    = "/code"
 )
 
 // Query provides the minimal read-only API needed to verify committed state.
@@ -37,6 +38,9 @@ func (app *App) Query(_ context.Context, req *abci.QueryRequest) (*abci.QueryRes
 		response.Value = []byte(stateDB.GetBalance(address).ToBig().String())
 	case QueryNonce:
 		response.Value = []byte(fmt.Sprintf("%d", stateDB.GetNonce(address)))
+	case QueryCode:
+		// Trả raw bytecode; lớp Ethereum JSON-RPC sẽ mã hóa thành hex data.
+		response.Value = stateDB.GetCode(address)
 	default:
 		return queryError(fmt.Sprintf("unsupported query path %q", req.Path)), nil
 	}
