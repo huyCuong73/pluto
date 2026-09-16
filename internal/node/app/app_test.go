@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
 	"github.com/huyCuong73/pluto/modules/evm"
 )
@@ -231,6 +233,41 @@ func TestContractCreationUsesPreTransactionNonce(t *testing.T) {
 	}
 }
 
+func TestFailedContractCreationDoesNotCommitRevertedAccountToAppHash(t *testing.T) {
+	application := newTestApp(t)
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	sender := crypto.PubkeyToAddress(privateKey.PublicKey)
+	seedBalance(t, application, sender, big.NewInt(1))
+
+	raw := signedLegacyTransaction(t, privateKey, 0, 100_000, nil, big.NewInt(0), []byte{0xfe})
+	response := finalizeTransactions(t, application, 1, raw)
+	if response.TxResults[0].Code != CodeExecutionFailed {
+		t.Fatalf("failed creation code = %d, want EVM execution failure", response.TxResults[0].Code)
+	}
+	if got := application.pendingState.GetNonce(sender); got != 1 {
+		t.Fatalf("sender nonce after failed creation = %d, want 1", got)
+	}
+	created := crypto.CreateAddress(sender, 0)
+	if got := application.pendingState.GetCode(created); len(got) != 0 {
+		t.Fatalf("failed creation left code at %s: %x", created, got)
+	}
+
+	encoded, err := rlp.EncodeToBytes(&evm.Account{Nonce: 1, Balance: big.NewInt(1)})
+	if err != nil {
+		t.Fatalf("encode expected sender account: %v", err)
+	}
+	hasher := sha256.New()
+	hasher.Write(sender.Bytes())
+	hasher.Write(encoded)
+	wantHash := hasher.Sum(nil)
+	if !bytes.Equal(response.AppHash, wantHash) {
+		t.Fatalf("failed creation AppHash = %x, want sender-only state transition %x", response.AppHash, wantHash)
+	}
+}
+
 func TestMultipleTransactionsFromSameSenderInOneBlock(t *testing.T) {
 	application := newTestApp(t)
 	privateKey, err := crypto.GenerateKey()
@@ -348,6 +385,38 @@ func TestSuccessfulTransactionContinuesAfterRevertedExecution(t *testing.T) {
 	}
 	if got := stateDB.GetState(contract, common.Hash{}); got != (common.Hash{}) {
 		t.Fatalf("reverted storage write persisted: %s", got)
+	}
+}
+
+func TestRejectedPrecheckDoesNotChangeAppHash(t *testing.T) {
+	application := newTestApp(t)
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	sender := crypto.PubkeyToAddress(privateKey.PublicKey)
+	other := common.HexToAddress("0x1240000000000000000000000000000000000012")
+	receiver := common.HexToAddress("0x1250000000000000000000000000000000000012")
+	stateDB := evm.NewPebbleStateDB(application.db)
+	stateDB.AddBalanceBig(sender, big.NewInt(1))
+	stateDB.AddBalanceBig(other, big.NewInt(1))
+	baselineHash, err := stateDB.ComputeAppHash()
+	if err != nil {
+		t.Fatalf("compute baseline AppHash: %v", err)
+	}
+	if err := stateDB.Commit(); err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+	application.appHash = bytes.Clone(baselineHash)
+
+	response := finalizeTransactions(t, application, 1,
+		signedLegacyTransaction(t, privateKey, 0, 21_000, &receiver, big.NewInt(2), nil),
+	)
+	if response.TxResults[0].Code != CodeTransactionRejected {
+		t.Fatalf("insufficient-funds transaction code = %d, want precheck rejection", response.TxResults[0].Code)
+	}
+	if !bytes.Equal(response.AppHash, baselineHash) {
+		t.Fatalf("rejected precheck changed AppHash: got %x, want %x", response.AppHash, baselineHash)
 	}
 }
 
