@@ -233,8 +233,10 @@ func (s *PebbleStateDB) CreateAccount(addr common.Address) {
 }
 
 func (s *PebbleStateDB) CreateContract(addr common.Address) {
-	acc := s.getAccount(addr)
-	acc.Nonce = 1 // Nonce contract bắt đầu từ 1 (EIP-161)
+	// The EVM calls SetNonce immediately after CreateContract when EIP-158 is
+	// active. Mutating the nonce here would make CREATE observe/increment it
+	// twice and derive the contract address from the wrong sender nonce.
+	s.getAccount(addr)
 	s.markDirty(addr)
 }
 
@@ -740,11 +742,23 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 
 // Commit toàn bộ dirty state xuống PebbleDB
 func (s *PebbleStateDB) Commit() error {
+	batch := s.db.NewBatch()
+	defer batch.Close()
+	if err := s.WriteToBatch(batch); err != nil {
+		return err
+	}
+	return batch.WriteSync()
+}
+
+// WriteToBatch stages the complete block overlay in a caller-owned batch. The
+// ABCI application uses this to atomically commit state and block metadata.
+func (s *PebbleStateDB) WriteToBatch(batch dbm.Batch) error {
 	if s.dbErr != nil {
 		return s.dbErr
 	}
-	batch := s.db.NewBatch()
-	defer batch.Close()
+	if batch == nil {
+		return fmt.Errorf("state commit batch is nil")
+	}
 
 	// Ghi accounts
 	for addr, acc := range s.state {
@@ -786,13 +800,16 @@ func (s *PebbleStateDB) Commit() error {
 		}
 	}
 
-	return batch.WriteSync()
+	return nil
 }
 
 // AppHash — Tính SHA256 từ dirty accounts (Phase 1 simple approach)
-func (s *PebbleStateDB) ComputeAppHash() []byte {
+func (s *PebbleStateDB) ComputeAppHash() ([]byte, error) {
+	if s.dbErr != nil {
+		return nil, s.dbErr
+	}
 	if len(s.dirtyAccounts) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Sort address deterministic
@@ -812,13 +829,13 @@ func (s *PebbleStateDB) ComputeAppHash() []byte {
 		}
 		data, err := rlp.EncodeToBytes(acc)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("encode account %s for AppHash: %w", addr.Hex(), err)
 		}
 		h.Write(addr.Bytes())
 		h.Write(data)
 	}
 
-	return h.Sum(nil)
+	return h.Sum(nil), nil
 }
 
 // Add balance cho genesis

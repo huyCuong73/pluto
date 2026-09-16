@@ -44,6 +44,9 @@ func (app *App) Query(_ context.Context, req *abci.QueryRequest) (*abci.QueryRes
 	default:
 		return queryError(fmt.Sprintf("unsupported query path %q", req.Path)), nil
 	}
+	if err := stateDB.Error(); err != nil {
+		return nil, fmt.Errorf("query committed EVM state: %w", err)
+	}
 
 	return response, nil
 }
