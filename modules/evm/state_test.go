@@ -7,7 +7,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	store "github.com/huyCuong73/pluto/internal/platform/storage"
 )
@@ -101,5 +103,95 @@ func TestSetCodeReturnsPreviousBytecodeAndReverts(t *testing.T) {
 	}
 	if got := stateDB.GetCodeHash(address); got != crypto.Keccak256Hash(oldCode) {
 		t.Fatalf("GetCodeHash after revert = %s, want old-code hash", got)
+	}
+}
+
+func TestPrepareResetsTransactionScopedState(t *testing.T) {
+	stateDB := newTestStateDB(t)
+	staleAddress := common.HexToAddress("0x4000000000000000000000000000000000000004")
+	staleSlot := common.HexToHash("0x04")
+	stateDB.AddSlotToAccessList(staleAddress, staleSlot)
+	stateDB.SetTransientState(staleAddress, staleSlot, common.HexToHash("0x99"))
+
+	sender := common.HexToAddress("0x4100000000000000000000000000000000000004")
+	destination := common.HexToAddress("0x4200000000000000000000000000000000000004")
+	precompile := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	listedAddress := common.HexToAddress("0x4300000000000000000000000000000000000004")
+	listedSlot := common.HexToHash("0x43")
+	stateDB.Prepare(
+		params.Rules{IsBerlin: true, IsEIP2929: true},
+		sender,
+		common.Address{},
+		&destination,
+		[]common.Address{precompile},
+		types.AccessList{{Address: listedAddress, StorageKeys: []common.Hash{listedSlot}}},
+	)
+
+	if stateDB.AddressInAccessList(staleAddress) {
+		t.Fatal("stale address remained warm across transactions")
+	}
+	if got := stateDB.GetTransientState(staleAddress, staleSlot); got != (common.Hash{}) {
+		t.Fatalf("transient value leaked across transactions: %s", got)
+	}
+	for _, address := range []common.Address{sender, destination, precompile, listedAddress} {
+		if !stateDB.AddressInAccessList(address) {
+			t.Errorf("expected warm address %s", address)
+		}
+	}
+	if addressOK, slotOK := stateDB.SlotInAccessList(listedAddress, listedSlot); !addressOK || !slotOK {
+		t.Fatalf("transaction access-list slot not warm: address=%v slot=%v", addressOK, slotOK)
+	}
+}
+
+func TestFinaliseResetsRefundAndSnapshotBoundary(t *testing.T) {
+	stateDB := newTestStateDB(t)
+	address := common.HexToAddress("0x5000000000000000000000000000000000000005")
+	stateDB.AddRefund(123)
+	stateDB.SetNonce(address, 1, tracing.NonceChangeUnspecified)
+	stateDB.Snapshot()
+
+	stateDB.Finalise(true)
+
+	if got := stateDB.GetRefund(); got != 0 {
+		t.Fatalf("refund after Finalise = %d, want 0", got)
+	}
+	if got := stateDB.Snapshot(); got != 0 {
+		t.Fatalf("first snapshot after Finalise = %d, want fresh boundary 0", got)
+	}
+}
+
+func TestCommittedStorageAdvancesAtTransactionBoundary(t *testing.T) {
+	stateDB := newTestStateDB(t)
+	address := common.HexToAddress("0x6000000000000000000000000000000000000006")
+	slot := common.HexToHash("0x01")
+	valueA := common.HexToHash("0xaa")
+	valueB := common.HexToHash("0xbb")
+	valueC := common.HexToHash("0xcc")
+
+	stateDB.SetState(address, slot, valueA)
+	if err := stateDB.Commit(); err != nil {
+		t.Fatalf("commit initial slot: %v", err)
+	}
+
+	stateDB.Prepare(params.Rules{IsBerlin: true, IsEIP2929: true}, address, common.Address{}, &address, nil, nil)
+	if got := stateDB.GetCommittedState(address, slot); got != valueA {
+		t.Fatalf("tx1 committed state = %s, want A %s", got, valueA)
+	}
+	stateDB.SetState(address, slot, valueB)
+	stateDB.Finalise(true)
+
+	stateDB.Prepare(params.Rules{IsBerlin: true, IsEIP2929: true}, address, common.Address{}, &address, nil, nil)
+	if got := stateDB.GetState(address, slot); got != valueB {
+		t.Fatalf("tx2 current state = %s, want B %s", got, valueB)
+	}
+	if got := stateDB.GetCommittedState(address, slot); got != valueB {
+		t.Fatalf("tx2 committed state = %s, want B %s", got, valueB)
+	}
+	stateDB.SetState(address, slot, valueC)
+	if got := stateDB.GetState(address, slot); got != valueC {
+		t.Fatalf("tx2 updated current state = %s, want C %s", got, valueC)
+	}
+	if got := stateDB.GetCommittedState(address, slot); got != valueB {
+		t.Fatalf("tx2 original changed after SSTORE: got %s, want B %s", got, valueB)
 	}
 }
