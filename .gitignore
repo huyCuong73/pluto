@@ -1,5 +1,5 @@
-# Tài liệu nháp/local không đưa lên repository; tài liệu kiến trúc chính thức
-# được quản lý trong /docs.
+# Tài liệu local không đưa lên repository.
+/docs/
 /tailieu/
 
 # Cấu hình IDE/agent chỉ có ý nghĩa trên máy cá nhân.
@@ -9,7 +9,7 @@
 
 # Binary và artifact build: luôn có thể tạo lại từ source.
 /build/
-/dist/
+/dist/doc
 /bin/
 /plutod
 /plutod.exe

@@ -12,8 +12,7 @@ năng có ranh giới package rõ ràng. PQC là module riêng tại `modules/pq
 primitive ML-DSA-65, transaction hybrid và companion proxy; module transaction
 nền không phụ thuộc ngược vào PQC.
 
-Xem cây thư mục, hướng phụ thuộc và quy tắc thêm module tại
-[docs/architecture.md](docs/architecture.md).
+Tài liệu kiến trúc chi tiết được lưu cục bộ trong `docs/` và không đưa lên Git.
 
 ## 1. Build
 
@@ -147,5 +146,4 @@ Test end-to-end dựng node thật và kiểm tra bốn đường đi: raw trans
 - Companion proxy là phần mềm client giữ private key trong RAM khi chạy. Nó chỉ cho bind loopback và yêu cầu file private key có quyền `0600`, nhưng chưa thay thế hardware wallet/HSM hoặc MetaMask Snap được audit.
 - PQC hiện bảo vệ chữ ký transaction của account đã đăng ký; validator key và P2P vẫn dùng mật mã cổ điển. Không nên tuyên bố toàn blockchain đã “quantum-safe”.
 
-Xem thêm [kiến trúc module](docs/architecture.md) và
-[tài liệu nghiên cứu PQC](docs/research/quantum_cryptography.md).
+Các tài liệu kiến trúc và nghiên cứu PQC được lưu cục bộ trong `docs/`.
