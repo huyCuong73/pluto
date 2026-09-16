@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqcproxy"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	pqcproxy "github.com/huyCuong73/pluto/modules/pqc/proxy"
 )
 
 // runPQCProxy chạy companion signer ở phía client. MetaMask trỏ vào listen

@@ -15,9 +15,9 @@ import (
 	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 // TestHybridTransactionReachesIdenticalStateOnTwoValidators upgrades the

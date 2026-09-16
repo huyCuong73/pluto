@@ -1,5 +1,5 @@
-# Tài liệu local không đưa lên repository theo quy ước hiện tại.
-/docs/
+# Tài liệu nháp/local không đưa lên repository; tài liệu kiến trúc chính thức
+# được quản lý trong /docs.
 /tailieu/
 
 # Cấu hình IDE/agent chỉ có ý nghĩa trên máy cá nhân.

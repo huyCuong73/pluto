@@ -26,12 +26,13 @@ import (
 	rpclocal "github.com/cometbft/cometbft/rpc/client/local"
 	cmttypes "github.com/cometbft/cometbft/types"
 
-	"github.com/huyCuong73/pluto/internal/app"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/ethrpc"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	"github.com/huyCuong73/pluto/internal/store"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	"github.com/huyCuong73/pluto/internal/node/app"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	store "github.com/huyCuong73/pluto/internal/platform/storage"
+	ethrpc "github.com/huyCuong73/pluto/modules/ethereumrpc"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	pqctx "github.com/huyCuong73/pluto/modules/pqc/tx"
+	plutotx "github.com/huyCuong73/pluto/modules/transaction"
 )
 
 const DefaultEthereumRPCListenAddress = "127.0.0.1:8545"
@@ -265,11 +266,11 @@ func transactionValidatorFromGenesis(genesisFile string) (plutotx.TransactionVal
 	if len(genesisState.PQCKeys) == 0 {
 		return nil, "", fmt.Errorf("transaction policy %s requires at least one PQ key binding", policy)
 	}
-	registry, err := plutotx.NewStaticPQKeyRegistryFromHex(genesisState.PQCKeys)
+	registry, err := pqctx.NewStaticPQKeyRegistryFromHex(genesisState.PQCKeys)
 	if err != nil {
 		return nil, "", fmt.Errorf("create genesis PQ key registry: %w", err)
 	}
-	hybridValidator, err := plutotx.NewHybridValidator(
+	hybridValidator, err := pqctx.NewHybridValidator(
 		projectconfig.DefaultEVMChainID,
 		ethereumValidator,
 		pqc.NewMLDSA65(),
@@ -279,7 +280,7 @@ func transactionValidatorFromGenesis(genesisFile string) (plutotx.TransactionVal
 		return nil, "", err
 	}
 	if policy == projectconfig.TransactionPolicyPQCOptInMLDSA65 {
-		optInValidator, err := plutotx.NewOptInHybridValidator(ethereumValidator, hybridValidator, registry)
+		optInValidator, err := pqctx.NewOptInHybridValidator(ethereumValidator, hybridValidator, registry)
 		if err != nil {
 			return nil, "", err
 		}

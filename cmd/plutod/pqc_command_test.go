@@ -8,9 +8,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
+	"github.com/huyCuong73/pluto/modules/transaction"
 )
 
 func TestPQCKeygenAndWrapCommands(t *testing.T) {
@@ -57,7 +58,7 @@ func TestPQCKeygenAndWrapCommands(t *testing.T) {
 		t.Fatalf("read hybrid output: %v", err)
 	}
 
-	ecdsaValidator, err := plutotx.NewECDSAValidator(projectconfig.DefaultEVMChainID)
+	ecdsaValidator, err := transaction.NewECDSAValidator(projectconfig.DefaultEVMChainID)
 	if err != nil {
 		t.Fatalf("create ECDSA validator: %v", err)
 	}

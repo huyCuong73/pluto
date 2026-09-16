@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 // runPQCKeygen tạo key ở phía client. Node validator không cần và không được

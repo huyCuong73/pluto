@@ -4,6 +4,17 @@ Pluto hiện chạy một node CometBFT + EVM tuần tự, có Ethereum JSON-RPC
 
 > Mức tương thích hiện tại là **MetaMask cho mạng cục bộ và native transfer**, chưa phải Ethereum RPC đầy đủ cho mọi dApp/smart contract. Xem phần giới hạn ở cuối tài liệu.
 
+## Kiến trúc source
+
+Source được chia thành ba vùng: `cmd/plutod` là nơi lắp ráp ứng dụng,
+`internal` chứa lõi node và adapter hạ tầng, còn `modules` chứa các module tính
+năng có ranh giới package rõ ràng. PQC là module riêng tại `modules/pqc`, gồm
+primitive ML-DSA-65, transaction hybrid và companion proxy; module transaction
+nền không phụ thuộc ngược vào PQC.
+
+Xem cây thư mục, hướng phụ thuộc và quy tắc thêm module tại
+[docs/architecture.md](docs/architecture.md).
+
 ## 1. Build
 
 Yêu cầu Go 1.24.1 trở lên.
@@ -136,4 +147,5 @@ Test end-to-end dựng node thật và kiểm tra bốn đường đi: raw trans
 - Companion proxy là phần mềm client giữ private key trong RAM khi chạy. Nó chỉ cho bind loopback và yêu cầu file private key có quyền `0600`, nhưng chưa thay thế hardware wallet/HSM hoặc MetaMask Snap được audit.
 - PQC hiện bảo vệ chữ ký transaction của account đã đăng ký; validator key và P2P vẫn dùng mật mã cổ điển. Không nên tuyên bố toàn blockchain đã “quantum-safe”.
 
-Đánh giá thiết kế cũ/mới và lộ trình tiếp theo nằm tại [tailieu/PQC_REVIEW_V2.md](tailieu/PQC_REVIEW_V2.md).
+Xem thêm [kiến trúc module](docs/architecture.md) và
+[tài liệu nghiên cứu PQC](docs/research/quantum_cryptography.md).

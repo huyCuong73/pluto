@@ -16,8 +16,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/huyCuong73/pluto/internal/app"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/huyCuong73/pluto/internal/node/app"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
 )
 
 const e2eNodeTimeout = 15 * time.Second

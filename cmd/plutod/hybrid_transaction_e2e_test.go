@@ -10,10 +10,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/huyCuong73/pluto/internal/app"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	"github.com/huyCuong73/pluto/internal/node/app"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 // TestHybridMLDSA65TransactionThroughRPCPersistsAfterRestart is the complete

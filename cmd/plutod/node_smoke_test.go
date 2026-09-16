@@ -10,8 +10,8 @@ import (
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	cfg "github.com/cometbft/cometbft/config"
-	"github.com/huyCuong73/pluto/internal/app"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/huyCuong73/pluto/internal/node/app"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
 )
 
 func TestNodeBootsProducesBlocksAndRestarts(t *testing.T) {

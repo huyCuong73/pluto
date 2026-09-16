@@ -11,9 +11,9 @@ import (
 	cmtprivval "github.com/cometbft/cometbft/privval"
 	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/huyCuong73/pluto/internal/app"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	"github.com/huyCuong73/pluto/internal/node/app"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 func TestRunInitCreatesMatchingValidatorAndApplicationGenesis(t *testing.T) {

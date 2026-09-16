@@ -13,10 +13,10 @@ import (
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	gethrpc "github.com/ethereum/go-ethereum/rpc"
-	projectconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/pqc"
-	"github.com/huyCuong73/pluto/internal/pqcproxy"
-	plutotx "github.com/huyCuong73/pluto/internal/tx"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
+	"github.com/huyCuong73/pluto/modules/pqc"
+	pqcproxy "github.com/huyCuong73/pluto/modules/pqc/proxy"
+	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 // TestMetaMaskStyleTransferThroughEthereumJSONRPC chứng minh đường đi mà
