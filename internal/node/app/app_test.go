@@ -459,6 +459,74 @@ func TestLegacySelfDestructDoesNotResurrectCodeOrStorage(t *testing.T) {
 	assertLogicallyDeletedContract(t, restartedState, contract, slot)
 }
 
+func TestRevertedInternalCallDoesNotKeepAccessListWarm(t *testing.T) {
+	coldGas := nestedRevertAccessGas(t, false)
+	prewarmedGas := nestedRevertAccessGas(t, true)
+
+	// Prewarming one address costs 2400 intrinsic gas and saves two cold BALANCE
+	// charges (2 * 2500). The net difference is therefore 2600. Without
+	// snapshot-aware access-list journaling, the reverted inner BALANCE warms the
+	// later outer BALANCE and the difference collapses to 100 gas.
+	if difference := coldGas - prewarmedGas; difference != 2_600 {
+		t.Fatalf("cold gas %d - prewarmed gas %d = %d, want 2600", coldGas, prewarmedGas, difference)
+	}
+}
+
+func nestedRevertAccessGas(t *testing.T, prewarmTarget bool) int64 {
+	t.Helper()
+	application := newTestApp(t)
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	sender := crypto.PubkeyToAddress(privateKey.PublicKey)
+	outer := common.HexToAddress("0x1233000000000000000000000000000000000012")
+	inner := common.HexToAddress("0x1234000000000000000000000000000000000012")
+	target := common.HexToAddress("0x1235000000000000000000000000000000000012")
+
+	// Inner: BALANCE(target); POP; REVERT(0, 0).
+	innerCode := append([]byte{0x73}, target.Bytes()...)
+	innerCode = append(innerCode, 0x31, 0x50, 0x60, 0x00, 0x60, 0x00, 0xfd)
+	// Outer: CALL(inner), ignore its failure, then BALANCE(target); POP; STOP.
+	outerCode := []byte{0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73}
+	outerCode = append(outerCode, inner.Bytes()...)
+	outerCode = append(outerCode, 0x61, 0xff, 0xff, 0xf1, 0x50, 0x73)
+	outerCode = append(outerCode, target.Bytes()...)
+	outerCode = append(outerCode, 0x31, 0x50, 0x00)
+
+	stateDB := evm.NewPebbleStateDB(application.db)
+	stateDB.AddBalanceBig(sender, big.NewInt(1))
+	stateDB.SetCode(outer, outerCode, tracing.CodeChangeUnspecified)
+	stateDB.SetCode(inner, innerCode, tracing.CodeChangeUnspecified)
+	if err := stateDB.Commit(); err != nil {
+		t.Fatalf("seed nested-call contracts: %v", err)
+	}
+
+	var raw []byte
+	if prewarmTarget {
+		unsigned := types.NewTx(&types.AccessListTx{
+			ChainID: big.NewInt(projectconfig.DefaultEVMChainID), Nonce: 0,
+			GasPrice: big.NewInt(0), Gas: 200_000, To: &outer,
+			Value: big.NewInt(0), AccessList: types.AccessList{{Address: target}},
+		})
+		signed, signErr := types.SignTx(unsigned, types.LatestSignerForChainID(big.NewInt(projectconfig.DefaultEVMChainID)), privateKey)
+		if signErr != nil {
+			t.Fatalf("sign access-list transaction: %v", signErr)
+		}
+		raw, err = signed.MarshalBinary()
+		if err != nil {
+			t.Fatalf("marshal access-list transaction: %v", err)
+		}
+	} else {
+		raw = signedLegacyTransaction(t, privateKey, 0, 200_000, &outer, big.NewInt(0), nil)
+	}
+	result := finalizeTransactions(t, application, 1, raw).TxResults[0]
+	if result.Code != CodeOK {
+		t.Fatalf("nested-call transaction failed: code=%d log=%q", result.Code, result.Log)
+	}
+	return result.GasUsed
+}
+
 func assertLogicallyDeletedContract(t *testing.T, stateDB *evm.PebbleStateDB, contract common.Address, slot common.Hash) {
 	t.Helper()
 	if stateDB.Exist(contract) {
