@@ -13,6 +13,11 @@ const (
 	// to prevent accidental cross-chain transaction replay.
 	DefaultEVMChainID int64 = 700001
 
+	// EVMBlockGasLimit matches CometBFT v1.0.0's genesis consensus MaxGas.
+	// Phase 3 may expose both values explicitly, but execution and RPC must use
+	// one coherent limit until then.
+	EVMBlockGasLimit uint64 = 10_000_000
+
 	// TransactionPolicyECDSA keeps the original signed-Ethereum-transaction
 	// wire format. TransactionPolicyHybridMLDSA65 requires the versioned Pluto
 	// envelope and both ECDSA and ML-DSA-65 authentication.

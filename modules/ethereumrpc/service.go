@@ -18,12 +18,13 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
+	projectconfig "github.com/huyCuong73/pluto/internal/node/config"
 	plutotx "github.com/huyCuong73/pluto/modules/pqc/tx"
 )
 
 const (
 	// BlockGasLimit phải đồng bộ với BlockContext trong internal/node/app.
-	BlockGasLimit uint64 = 30_000_000
+	BlockGasLimit uint64 = projectconfig.EVMBlockGasLimit
 	// Giá trị bảo thủ khi prototype chưa có binary-search gas simulation.
 	DefaultContractCallGas uint64 = 1_000_000
 )
