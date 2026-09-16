@@ -293,12 +293,13 @@ func (s *PebbleStateDB) GetCode(addr common.Address) []byte {
 
 func (s *PebbleStateDB) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
 	acc := s.getAccount(addr)
+	previousCode := s.GetCode(addr)
 
 	// Journal revert
 	s.journal = append(s.journal, journalEntry{
 		typ:          3,
 		addr:         addr,
-		prevCode:     s.GetCode(addr),
+		prevCode:     previousCode,
 		prevCodeHash: acc.CodeHash,
 	})
 
@@ -316,8 +317,7 @@ func (s *PebbleStateDB) SetCode(addr common.Address, code []byte, reason tracing
 
 	s.markDirty(addr)
 
-	// go-ethereum v1.16 trả về code hash cũ
-	return acc.CodeHash
+	return previousCode
 }
 
 func (s *PebbleStateDB) GetCodeSize(addr common.Address) int {
