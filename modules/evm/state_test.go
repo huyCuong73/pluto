@@ -1,11 +1,13 @@
 package evm
 
 import (
+	"bytes"
 	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 	store "github.com/huyCuong73/pluto/internal/platform/storage"
 )
@@ -65,5 +67,39 @@ func TestNestedSnapshotsRestoreCorrectBoundary(t *testing.T) {
 	stateDB.RevertToSnapshot(outer)
 	if got := stateDB.GetBalance(address).ToBig(); got.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("balance after outer revert = %s, want 100", got)
+	}
+}
+
+func TestSetCodeReturnsPreviousBytecodeAndReverts(t *testing.T) {
+	stateDB := newTestStateDB(t)
+	address := common.HexToAddress("0x3000000000000000000000000000000000000003")
+	oldCode := []byte{0x60, 0x01}
+	newCode := []byte{0x60, 0x02, 0x00}
+
+	if previous := stateDB.SetCode(address, oldCode, tracing.CodeChangeUnspecified); len(previous) != 0 {
+		t.Fatalf("first SetCode returned %x, want no previous code", previous)
+	}
+	if err := stateDB.Commit(); err != nil {
+		t.Fatalf("commit old code: %v", err)
+	}
+
+	snapshotID := stateDB.Snapshot()
+	if previous := stateDB.SetCode(address, newCode, tracing.CodeChangeUnspecified); !bytes.Equal(previous, oldCode) {
+		t.Fatalf("SetCode returned %x, want previous bytecode %x", previous, oldCode)
+	}
+	if got := stateDB.GetCode(address); !bytes.Equal(got, newCode) {
+		t.Fatalf("GetCode = %x, want %x", got, newCode)
+	}
+	wantHash := crypto.Keccak256Hash(newCode)
+	if got := stateDB.GetCodeHash(address); got != wantHash {
+		t.Fatalf("GetCodeHash = %s, want %s", got, wantHash)
+	}
+
+	stateDB.RevertToSnapshot(snapshotID)
+	if got := stateDB.GetCode(address); !bytes.Equal(got, oldCode) {
+		t.Fatalf("GetCode after revert = %x, want %x", got, oldCode)
+	}
+	if got := stateDB.GetCodeHash(address); got != crypto.Keccak256Hash(oldCode) {
+		t.Fatalf("GetCodeHash after revert = %s, want old-code hash", got)
 	}
 }
