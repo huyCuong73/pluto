@@ -279,3 +279,6 @@ func (db failingReadDatabase) Get([]byte) ([]byte, error) { return nil, db.err }
 func (failingReadDatabase) NewBatch() dbm.Batch {
 	panic("NewBatch must not be called by a read-failure test")
 }
+func (failingReadDatabase) Iterator([]byte, []byte) (dbm.Iterator, error) {
+	panic("Iterator must not be called by a read-failure test")
+}

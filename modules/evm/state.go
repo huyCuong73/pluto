@@ -31,7 +31,7 @@ type Account struct {
 
 // journalEntry lưu thay đổi để revert
 type journalEntry struct {
-	typ int // 0=balance, 1=nonce, 2=storage, 3=code, 4=selfDestruct, 5=transient, 6=dirty account
+	typ int // 0=balance, 1=nonce, 2=storage, 3=code, 4=selfDestruct, 5=transient, 6=dirty account, 7=access address, 8=access slot, 9=resurrect
 
 	addr common.Address
 
@@ -81,7 +81,12 @@ type PebbleStateDB struct {
 	originalStorage map[common.Address]map[common.Hash]common.Hash
 
 	// Self-destruct
-	selfDestructed map[common.Address]bool
+	selfDestructed   map[common.Address]bool
+	logicallyDeleted map[common.Address]bool
+	// destructionCleanup is retained if an address is recreated later in the
+	// block, so Commit can delete the preceding incarnation's persisted code
+	// and storage before writing any new incarnation.
+	destructionCleanup map[common.Address]bool
 
 	// Transient storage (EIP-1153) - Xoá sau mỗi tx
 	transientStorage map[common.Address]map[common.Hash]common.Hash
@@ -109,6 +114,7 @@ type PebbleStateDB struct {
 type Database interface {
 	Get(key []byte) ([]byte, error)
 	NewBatch() dbm.Batch
+	Iterator(start, end []byte) (dbm.Iterator, error)
 }
 
 // accessList warm addresses/slots cho EIP-2929
@@ -126,20 +132,22 @@ func newAccessList() *accessList {
 
 func NewPebbleStateDB(db Database) *PebbleStateDB {
 	return &PebbleStateDB{
-		db:               db,
-		state:            make(map[common.Address]*Account),
-		code:             make(map[common.Address][]byte),
-		dirtyCode:        make(map[common.Address]bool),
-		storage:          make(map[common.Address]map[common.Hash]common.Hash),
-		dirtyStorage:     make(map[common.Address]map[common.Hash]bool),
-		originalStorage:  make(map[common.Address]map[common.Hash]common.Hash),
-		selfDestructed:   make(map[common.Address]bool),
-		transientStorage: make(map[common.Address]map[common.Hash]common.Hash),
-		logs:             make([]*types.Log, 0),
-		journal:          make([]journalEntry, 0, 64),
-		snapshots:        make([]snapshot, 0, 4),
-		accessList:       newAccessList(),
-		dirtyAccounts:    make(map[common.Address]bool),
+		db:                 db,
+		state:              make(map[common.Address]*Account),
+		code:               make(map[common.Address][]byte),
+		dirtyCode:          make(map[common.Address]bool),
+		storage:            make(map[common.Address]map[common.Hash]common.Hash),
+		dirtyStorage:       make(map[common.Address]map[common.Hash]bool),
+		originalStorage:    make(map[common.Address]map[common.Hash]common.Hash),
+		selfDestructed:     make(map[common.Address]bool),
+		logicallyDeleted:   make(map[common.Address]bool),
+		destructionCleanup: make(map[common.Address]bool),
+		transientStorage:   make(map[common.Address]map[common.Hash]common.Hash),
+		logs:               make([]*types.Log, 0),
+		journal:            make([]journalEntry, 0, 64),
+		snapshots:          make([]snapshot, 0, 4),
+		accessList:         newAccessList(),
+		dirtyAccounts:      make(map[common.Address]bool),
 	}
 }
 
@@ -206,6 +214,24 @@ func storageKey(addr common.Address, key common.Hash) []byte {
 	return k
 }
 
+func storagePrefix(addr common.Address) []byte {
+	k := make([]byte, 0, 8+20)
+	k = append(k, []byte("storage-")...)
+	k = append(k, addr.Bytes()...)
+	return k
+}
+
+func prefixEnd(prefix []byte) []byte {
+	end := append([]byte(nil), prefix...)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] != 0xff {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return nil
+}
+
 // codeKey: Key DB code ("code-" + addr)
 func codeKey(addr common.Address) []byte {
 	k := make([]byte, 0, 5+20)
@@ -230,6 +256,10 @@ func (s *PebbleStateDB) markDirty(addr common.Address) {
 // ============================================================
 
 func (s *PebbleStateDB) CreateAccount(addr common.Address) {
+	if s.logicallyDeleted[addr] {
+		s.journal = append(s.journal, journalEntry{typ: 9, addr: addr})
+		delete(s.logicallyDeleted, addr)
+	}
 	acc := s.getAccount(addr)
 	// Reset state cho address mới, giữ balance (EIP-161)
 	acc.Nonce = 0
@@ -313,6 +343,9 @@ func (s *PebbleStateDB) SetNonce(addr common.Address, nonce uint64, reason traci
 // --- Code (Smart Contract Bytecode) ---
 
 func (s *PebbleStateDB) GetCodeHash(addr common.Address) common.Hash {
+	if s.logicallyDeleted[addr] {
+		return types.EmptyCodeHash
+	}
 	acc := s.getAccount(addr)
 	if len(acc.CodeHash) == 0 {
 		// EOA hoặc trống -> trả về empty hash (EVM spec)
@@ -322,6 +355,14 @@ func (s *PebbleStateDB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 func (s *PebbleStateDB) GetCode(addr common.Address) []byte {
+	if s.logicallyDeleted[addr] {
+		return nil
+	}
+	// CodeHash is the durable logical reference. A stale code key left by an
+	// old incarnation must never make an empty account executable again.
+	if len(s.getAccount(addr).CodeHash) == 0 {
+		return nil
+	}
 	// Check cache
 	if code, ok := s.code[addr]; ok {
 		return code
@@ -401,6 +442,9 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 		if val, ok := slots[key]; ok {
 			return val
 		}
+	}
+	if s.logicallyDeleted[addr] || s.destructionCleanup[addr] {
+		return common.Hash{}
 	}
 
 	// Đọc DB
@@ -549,12 +593,18 @@ func (s *PebbleStateDB) SelfDestruct6780(addr common.Address) (uint256.Int, bool
 // --- Account Existence ---
 
 func (s *PebbleStateDB) Exist(addr common.Address) bool {
+	if s.logicallyDeleted[addr] {
+		return false
+	}
 	acc := s.getAccount(addr)
 	// Tồn tại nếu có state
 	return acc.Nonce > 0 || acc.Balance.Sign() > 0 || len(acc.CodeHash) > 0
 }
 
 func (s *PebbleStateDB) Empty(addr common.Address) bool {
+	if s.logicallyDeleted[addr] {
+		return true
+	}
 	acc := s.getAccount(addr)
 	return acc.Nonce == 0 && acc.Balance.Sign() == 0 && len(acc.CodeHash) == 0
 }
@@ -617,15 +667,23 @@ func (s *PebbleStateDB) SlotInAccessList(addr common.Address, slot common.Hash) 
 }
 
 func (s *PebbleStateDB) AddAddressToAccessList(addr common.Address) {
+	if s.accessList.addresses[addr] {
+		return
+	}
 	s.accessList.addresses[addr] = true
+	s.journal = append(s.journal, journalEntry{typ: 7, addr: addr})
 }
 
 func (s *PebbleStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	s.accessList.addresses[addr] = true
+	s.AddAddressToAccessList(addr)
 	if s.accessList.slots[addr] == nil {
 		s.accessList.slots[addr] = make(map[common.Hash]bool)
 	}
+	if s.accessList.slots[addr][slot] {
+		return
+	}
 	s.accessList.slots[addr][slot] = true
+	s.journal = append(s.journal, journalEntry{typ: 8, addr: addr, key: slot})
 }
 
 // --- Snapshot / Revert ---
@@ -680,6 +738,13 @@ func (s *PebbleStateDB) RevertToSnapshot(revid int) {
 			s.transientStorage[entry.addr][entry.key] = entry.prevTransientVal
 		case 6: // first dirty mark after this snapshot
 			delete(s.dirtyAccounts, entry.addr)
+		case 7: // access-list address added after snapshot
+			delete(s.accessList.addresses, entry.addr)
+			delete(s.accessList.slots, entry.addr)
+		case 8: // access-list slot added after snapshot
+			delete(s.accessList.slots[entry.addr], entry.key)
+		case 9: // a logically deleted account was recreated after snapshot
+			s.logicallyDeleted[entry.addr] = true
 		}
 	}
 
@@ -731,11 +796,20 @@ func (s *PebbleStateDB) PointCache() *utils.PointCache {
 }
 
 func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
-	// Xoá accounts tự huỷ
+	// Pre-Cancun SELFDESTRUCT removes the account logically at the transaction
+	// boundary. Cache tombstones prevent a later transaction in this block from
+	// reloading the preceding incarnation from PebbleDB.
 	for addr := range s.selfDestructed {
 		if s.selfDestructed[addr] {
-			delete(s.storage, addr)
-			delete(s.code, addr)
+			acc := s.getAccount(addr)
+			acc.Nonce = 0
+			acc.Balance = new(big.Int)
+			acc.StorageRoot = common.Hash{}
+			acc.CodeHash = nil
+			s.storage[addr] = make(map[common.Hash]common.Hash)
+			s.code[addr] = nil
+			s.logicallyDeleted[addr] = true
+			s.destructionCleanup[addr] = true
 			s.markDirty(addr)
 		}
 	}
@@ -783,8 +857,38 @@ func (s *PebbleStateDB) WriteToBatch(batch dbm.Batch) error {
 		}
 	}
 
+	// Delete the prior incarnation's persistent code and all storage keys. These
+	// are logical Pebble deletions in the same atomic batch; physical space
+	// reclamation remains a compaction concern.
+	for addr := range s.destructionCleanup {
+		if err := batch.Delete(codeKey(addr)); err != nil {
+			return err
+		}
+		prefix := storagePrefix(addr)
+		iterator, err := s.db.Iterator(prefix, prefixEnd(prefix))
+		if err != nil {
+			return fmt.Errorf("iterate destroyed storage %s: %w", addr.Hex(), err)
+		}
+		for ; iterator.Valid(); iterator.Next() {
+			if err := batch.Delete(iterator.Key()); err != nil {
+				iterator.Close()
+				return err
+			}
+		}
+		if err := iterator.Error(); err != nil {
+			iterator.Close()
+			return fmt.Errorf("iterate destroyed storage %s: %w", addr.Hex(), err)
+		}
+		if err := iterator.Close(); err != nil {
+			return fmt.Errorf("close destroyed storage iterator %s: %w", addr.Hex(), err)
+		}
+	}
+
 	// Ghi code dirty
 	for addr := range s.dirtyCode {
+		if s.logicallyDeleted[addr] {
+			continue
+		}
 		code := s.code[addr]
 		if len(code) > 0 {
 			if err := batch.Set(codeKey(addr), code); err != nil {
@@ -795,6 +899,9 @@ func (s *PebbleStateDB) WriteToBatch(batch dbm.Batch) error {
 
 	// Ghi storage dirty
 	for addr, dirtyKeys := range s.dirtyStorage {
+		if s.logicallyDeleted[addr] {
+			continue
+		}
 		slots := s.storage[addr]
 		for key := range dirtyKeys {
 			val := slots[key]
