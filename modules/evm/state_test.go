@@ -195,3 +195,45 @@ func TestCommittedStorageAdvancesAtTransactionBoundary(t *testing.T) {
 		t.Fatalf("tx2 original changed after SSTORE: got %s, want B %s", got, valueB)
 	}
 }
+
+func TestConsensusReadsRecordDatabaseErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(*PebbleStateDB)
+	}{
+		{name: "account", read: func(stateDB *PebbleStateDB) {
+			stateDB.GetBalance(common.HexToAddress("0x7100000000000000000000000000000000000001"))
+		}},
+		{name: "code", read: func(stateDB *PebbleStateDB) {
+			stateDB.GetCode(common.HexToAddress("0x7200000000000000000000000000000000000002"))
+		}},
+		{name: "current storage", read: func(stateDB *PebbleStateDB) {
+			stateDB.GetState(common.HexToAddress("0x7300000000000000000000000000000000000003"), common.HexToHash("0x01"))
+		}},
+		{name: "committed storage", read: func(stateDB *PebbleStateDB) {
+			stateDB.GetCommittedState(common.HexToAddress("0x7400000000000000000000000000000000000004"), common.HexToHash("0x01"))
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := store.NewPebbleDB("read-error", t.TempDir())
+			if err != nil {
+				t.Fatalf("open database: %v", err)
+			}
+			stateDB := NewPebbleStateDB(db)
+			if err := db.Close(); err != nil {
+				t.Fatalf("close database for fault injection: %v", err)
+			}
+
+			test.read(stateDB)
+			reporter, ok := any(stateDB).(interface{ Error() error })
+			if !ok {
+				t.Fatal("PebbleStateDB does not expose a sticky read error")
+			}
+			if err := reporter.Error(); err == nil {
+				t.Fatal("database read error was silently interpreted as zero state")
+			}
+		})
+	}
+}
