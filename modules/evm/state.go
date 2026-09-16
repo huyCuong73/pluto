@@ -31,7 +31,7 @@ type Account struct {
 
 // journalEntry lưu thay đổi để revert
 type journalEntry struct {
-	typ int // 0=balance, 1=nonce, 2=storage, 3=code, 4=selfDestruct, 5=transient
+	typ int // 0=balance, 1=nonce, 2=storage, 3=code, 4=selfDestruct, 5=transient, 6=dirty account
 
 	addr common.Address
 
@@ -216,6 +216,12 @@ func codeKey(addr common.Address) []byte {
 
 // markDirty đánh dấu account thay đổi (cho AppHash)
 func (s *PebbleStateDB) markDirty(addr common.Address) {
+	if !s.dirtyAccounts[addr] {
+		// Dirty membership is part of the pending AppHash lifecycle. Journal its
+		// first addition so an EVM snapshot revert cannot commit a reverted-only
+		// account to the block commitment.
+		s.journal = append(s.journal, journalEntry{typ: 6, addr: addr})
+	}
 	s.dirtyAccounts[addr] = true
 }
 
@@ -672,6 +678,8 @@ func (s *PebbleStateDB) RevertToSnapshot(revid int) {
 				s.transientStorage[entry.addr] = make(map[common.Hash]common.Hash)
 			}
 			s.transientStorage[entry.addr][entry.key] = entry.prevTransientVal
+		case 6: // first dirty mark after this snapshot
+			delete(s.dirtyAccounts, entry.addr)
 		}
 	}
 
