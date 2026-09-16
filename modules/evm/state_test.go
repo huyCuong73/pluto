@@ -2,9 +2,11 @@ package evm
 
 import (
 	"bytes"
+	"errors"
 	"math/big"
 	"testing"
 
+	dbm "github.com/cometbft/cometbft-db"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -217,23 +219,22 @@ func TestConsensusReadsRecordDatabaseErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := store.NewPebbleDB("read-error", t.TempDir())
-			if err != nil {
-				t.Fatalf("open database: %v", err)
-			}
-			stateDB := NewPebbleStateDB(db)
-			if err := db.Close(); err != nil {
-				t.Fatalf("close database for fault injection: %v", err)
-			}
+			injected := errors.New("injected database read failure")
+			stateDB := NewPebbleStateDB(failingReadDatabase{err: injected})
 
 			test.read(stateDB)
-			reporter, ok := any(stateDB).(interface{ Error() error })
-			if !ok {
-				t.Fatal("PebbleStateDB does not expose a sticky read error")
-			}
-			if err := reporter.Error(); err == nil {
+			if err := stateDB.Error(); err == nil {
 				t.Fatal("database read error was silently interpreted as zero state")
+			} else if !errors.Is(err, injected) {
+				t.Fatalf("sticky error = %v, want injected cause", err)
 			}
 		})
 	}
+}
+
+type failingReadDatabase struct{ err error }
+
+func (db failingReadDatabase) Get([]byte) ([]byte, error) { return nil, db.err }
+func (failingReadDatabase) NewBatch() dbm.Batch {
+	panic("NewBatch must not be called by a read-failure test")
 }

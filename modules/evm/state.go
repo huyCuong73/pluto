@@ -2,9 +2,11 @@ package evm
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 	"sort"
 
+	dbm "github.com/cometbft/cometbft-db"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
@@ -15,7 +17,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
-	store "github.com/huyCuong73/pluto/internal/platform/storage"
 )
 
 // Account EVM, mã hoá RLP khi lưu PebbleDB
@@ -58,7 +59,11 @@ type snapshot struct {
 
 // PebbleStateDB implements vm.StateDB for geth v1.16
 type PebbleStateDB struct {
-	db *store.PebbleDB
+	db Database
+
+	// dbErr is sticky because vm.StateDB getters cannot return errors. The ABCI
+	// boundary must check it and abort the state transition deterministically.
+	dbErr error
 
 	// Cache accounts
 	state map[common.Address]*Account
@@ -98,6 +103,14 @@ type PebbleStateDB struct {
 	dirtyAccounts map[common.Address]bool
 }
 
+// Database is the minimal persistent-store surface required by PebbleStateDB.
+// Keeping it as an interface permits deterministic read-failure injection in
+// tests without changing the production Pebble adapter.
+type Database interface {
+	Get(key []byte) ([]byte, error)
+	NewBatch() dbm.Batch
+}
+
 // accessList warm addresses/slots cho EIP-2929
 type accessList struct {
 	addresses map[common.Address]bool
@@ -111,7 +124,7 @@ func newAccessList() *accessList {
 	}
 }
 
-func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
+func NewPebbleStateDB(db Database) *PebbleStateDB {
 	return &PebbleStateDB{
 		db:               db,
 		state:            make(map[common.Address]*Account),
@@ -130,6 +143,16 @@ func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
 	}
 }
 
+func (s *PebbleStateDB) setError(err error) {
+	if err != nil && s.dbErr == nil {
+		s.dbErr = err
+	}
+}
+
+// Error returns the first persistence/decode failure observed by a StateDB
+// getter. Callers must check it before accepting an execution result or commit.
+func (s *PebbleStateDB) Error() error { return s.dbErr }
+
 // ============================================================
 // Internal helpers
 // ============================================================
@@ -141,7 +164,13 @@ func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
 
 	// Key DB: "acc-" + Address
 	key := append([]byte("acc-"), addr.Bytes()...)
-	data, _ := s.db.Get(key)
+	data, err := s.db.Get(key)
+	if err != nil {
+		s.setError(fmt.Errorf("read account %s: %w", addr.Hex(), err))
+		acc := &Account{Balance: new(big.Int)}
+		s.state[addr] = acc
+		return acc
+	}
 
 	if len(data) == 0 {
 		// Account mới nếu chưa có
@@ -158,7 +187,11 @@ func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
 	// Decode RLP
 	var acc Account
 	if err := rlp.DecodeBytes(data, &acc); err != nil {
-		panic(err) // Panic nếu data hỏng
+		s.setError(fmt.Errorf("decode account %s: %w", addr.Hex(), err))
+		acc.Balance = new(big.Int)
+	}
+	if acc.Balance == nil {
+		acc.Balance = new(big.Int)
 	}
 	s.state[addr] = &acc
 	return &acc
@@ -287,7 +320,11 @@ func (s *PebbleStateDB) GetCode(addr common.Address) []byte {
 	}
 
 	// Check DB
-	data, _ := s.db.Get(codeKey(addr))
+	data, err := s.db.Get(codeKey(addr))
+	if err != nil {
+		s.setError(fmt.Errorf("read code %s: %w", addr.Hex(), err))
+		return nil
+	}
 	if len(data) > 0 {
 		s.code[addr] = data // Cache lại
 		return data
@@ -359,7 +396,11 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 	}
 
 	// Đọc DB
-	data, _ := s.db.Get(storageKey(addr, key))
+	data, err := s.db.Get(storageKey(addr, key))
+	if err != nil {
+		s.setError(fmt.Errorf("read storage %s/%s: %w", addr.Hex(), key.Hex(), err))
+		return common.Hash{}
+	}
 	if len(data) == 0 {
 		return common.Hash{}
 	}
@@ -699,6 +740,9 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 
 // Commit toàn bộ dirty state xuống PebbleDB
 func (s *PebbleStateDB) Commit() error {
+	if s.dbErr != nil {
+		return s.dbErr
+	}
 	batch := s.db.NewBatch()
 	defer batch.Close()
 
