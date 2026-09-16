@@ -234,8 +234,8 @@ func (s *PebbleStateDB) CreateAccount(addr common.Address) {
 
 func (s *PebbleStateDB) CreateContract(addr common.Address) {
 	// The EVM calls SetNonce immediately after CreateContract when EIP-158 is
-	// active. Mutating the nonce here would make CREATE observe/increment it
-	// twice and derive the contract address from the wrong sender nonce.
+	// active. Let that call own nonce initialization so the change is journaled
+	// and follows the vm.StateDB lifecycle contract.
 	s.getAccount(addr)
 	s.markDirty(addr)
 }
