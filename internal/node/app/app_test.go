@@ -157,6 +157,50 @@ func TestCheckTxReportsGasWanted(t *testing.T) {
 	}
 }
 
+func TestAccessListIntrinsicGasIsEnforced(t *testing.T) {
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	sender := crypto.PubkeyToAddress(privateKey.PublicKey)
+	receiver := common.HexToAddress("0x1110000000000000000000000000000000000011")
+	accessList := types.AccessList{{
+		Address:     common.HexToAddress("0x1120000000000000000000000000000000000011"),
+		StorageKeys: []common.Hash{common.HexToHash("0x01")},
+	}}
+	for _, test := range []struct {
+		name     string
+		gas      uint64
+		wantCode uint32
+		wantUsed int64
+	}{
+		{name: "below", gas: 25_299, wantCode: CodeTransactionRejected},
+		{name: "exact", gas: 25_300, wantCode: CodeOK, wantUsed: 25_300},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			application := newTestApp(t)
+			seedBalance(t, application, sender, big.NewInt(1))
+			unsigned := types.NewTx(&types.AccessListTx{
+				ChainID: big.NewInt(projectconfig.DefaultEVMChainID), Nonce: 0,
+				GasPrice: big.NewInt(0), Gas: test.gas, To: &receiver,
+				Value: big.NewInt(0), AccessList: accessList,
+			})
+			signed, signErr := types.SignTx(unsigned, types.LatestSignerForChainID(big.NewInt(projectconfig.DefaultEVMChainID)), privateKey)
+			if signErr != nil {
+				t.Fatalf("sign access-list transaction: %v", signErr)
+			}
+			raw, marshalErr := signed.MarshalBinary()
+			if marshalErr != nil {
+				t.Fatalf("marshal access-list transaction: %v", marshalErr)
+			}
+			result := finalizeTransactions(t, application, 1, raw).TxResults[0]
+			if result.Code != test.wantCode || result.GasUsed != test.wantUsed {
+				t.Fatalf("result = code:%d gas:%d log:%q, want code:%d gas:%d", result.Code, result.GasUsed, result.Log, test.wantCode, test.wantUsed)
+			}
+		})
+	}
+}
+
 func TestContractCreationUsesPreTransactionNonce(t *testing.T) {
 	application := newTestApp(t)
 	privateKey, err := crypto.GenerateKey()
