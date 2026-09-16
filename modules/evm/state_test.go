@@ -228,6 +228,9 @@ func TestConsensusReadsRecordDatabaseErrors(t *testing.T) {
 			} else if !errors.Is(err, injected) {
 				t.Fatalf("sticky error = %v, want injected cause", err)
 			}
+			if err := stateDB.Commit(); !errors.Is(err, injected) {
+				t.Fatalf("Commit error = %v, want injected read failure before batch creation", err)
+			}
 		})
 	}
 }
