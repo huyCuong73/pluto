@@ -388,6 +388,90 @@ func TestSuccessfulTransactionContinuesAfterRevertedExecution(t *testing.T) {
 	}
 }
 
+func TestLegacySelfDestructDoesNotResurrectCodeOrStorage(t *testing.T) {
+	dbPath := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	application, err := NewAppWithChainID(dbPath, logger, projectconfig.DefaultEVMChainID)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			if err := application.Close(); err != nil {
+				t.Errorf("close app: %v", err)
+			}
+		}
+	})
+
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	sender := crypto.PubkeyToAddress(privateKey.PublicKey)
+	contract := common.HexToAddress("0x1231000000000000000000000000000000000012")
+	beneficiary := common.HexToAddress("0x1232000000000000000000000000000000000012")
+	slot := common.HexToHash("0x01")
+	oldValue := common.HexToHash("0xdeadbeef")
+	selfDestructCode := append([]byte{0x73}, beneficiary.Bytes()...)
+	selfDestructCode = append(selfDestructCode, 0xff) // PUSH20 beneficiary; SELFDESTRUCT
+
+	stateDB := evm.NewPebbleStateDB(application.db)
+	stateDB.AddBalanceBig(sender, big.NewInt(1))
+	stateDB.SetCode(contract, selfDestructCode, tracing.CodeChangeUnspecified)
+	stateDB.SetState(contract, slot, oldValue)
+	if err := stateDB.Commit(); err != nil {
+		t.Fatalf("seed self-destruct contract: %v", err)
+	}
+
+	response := finalizeTransactions(t, application, 1,
+		signedLegacyTransaction(t, privateKey, 0, 100_000, &contract, big.NewInt(0), nil),
+		signedLegacyTransaction(t, privateKey, 1, 100_000, &contract, big.NewInt(0), nil),
+	)
+	for index, result := range response.TxResults {
+		if result.Code != CodeOK {
+			t.Fatalf("transaction %d failed: code=%d log=%q", index, result.Code, result.Log)
+		}
+	}
+	if got := response.TxResults[1].GasUsed; got != 21_000 {
+		t.Fatalf("second call gas used = %d, want 21000 for a logically absent account", got)
+	}
+	assertLogicallyDeletedContract(t, application.pendingState, contract, slot)
+
+	if _, err := application.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+		t.Fatalf("commit self-destruct block: %v", err)
+	}
+	if err := application.Close(); err != nil {
+		t.Fatalf("close app before restart: %v", err)
+	}
+	closed = true
+
+	reopened, err := NewAppWithChainID(dbPath, logger, projectconfig.DefaultEVMChainID)
+	if err != nil {
+		t.Fatalf("reopen app: %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened app: %v", err)
+		}
+	}()
+	restartedState := evm.NewPebbleStateDB(reopened.db)
+	assertLogicallyDeletedContract(t, restartedState, contract, slot)
+}
+
+func assertLogicallyDeletedContract(t *testing.T, stateDB *evm.PebbleStateDB, contract common.Address, slot common.Hash) {
+	t.Helper()
+	if stateDB.Exist(contract) {
+		t.Fatalf("destroyed contract %s still exists", contract)
+	}
+	if code := stateDB.GetCode(contract); len(code) != 0 {
+		t.Fatalf("destroyed contract code resurrected: %x", code)
+	}
+	if value := stateDB.GetState(contract, slot); value != (common.Hash{}) {
+		t.Fatalf("destroyed contract storage resurrected: %s", value)
+	}
+}
+
 func TestRejectedPrecheckDoesNotChangeAppHash(t *testing.T) {
 	application := newTestApp(t)
 	privateKey, err := crypto.GenerateKey()

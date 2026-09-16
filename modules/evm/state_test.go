@@ -145,6 +145,44 @@ func TestPrepareResetsTransactionScopedState(t *testing.T) {
 	}
 }
 
+func TestAccessListAdditionsRevertToSnapshotBoundary(t *testing.T) {
+	stateDB := newTestStateDB(t)
+	sender := common.HexToAddress("0x4400000000000000000000000000000000000004")
+	prewarmedAddress := common.HexToAddress("0x4500000000000000000000000000000000000004")
+	prewarmedSlot := common.HexToHash("0x45")
+	newAddress := common.HexToAddress("0x4600000000000000000000000000000000000004")
+	newSlot := common.HexToHash("0x46")
+	stateDB.Prepare(
+		params.Rules{IsBerlin: true, IsEIP2929: true},
+		sender,
+		common.Address{},
+		nil,
+		nil,
+		types.AccessList{{Address: prewarmedAddress, StorageKeys: []common.Hash{prewarmedSlot}}},
+	)
+
+	snapshotID := stateDB.Snapshot()
+	stateDB.AddAddressToAccessList(newAddress)
+	stateDB.AddSlotToAccessList(prewarmedAddress, newSlot)
+	if !stateDB.AddressInAccessList(newAddress) {
+		t.Fatal("new address was not warm before revert")
+	}
+	if addressOK, slotOK := stateDB.SlotInAccessList(prewarmedAddress, newSlot); !addressOK || !slotOK {
+		t.Fatalf("new slot was not warm before revert: address=%v slot=%v", addressOK, slotOK)
+	}
+
+	stateDB.RevertToSnapshot(snapshotID)
+	if stateDB.AddressInAccessList(newAddress) {
+		t.Fatal("address added after snapshot remained warm after revert")
+	}
+	if addressOK, slotOK := stateDB.SlotInAccessList(prewarmedAddress, newSlot); !addressOK || slotOK {
+		t.Fatalf("slot added after snapshot was not reverted: address=%v slot=%v", addressOK, slotOK)
+	}
+	if addressOK, slotOK := stateDB.SlotInAccessList(prewarmedAddress, prewarmedSlot); !addressOK || !slotOK {
+		t.Fatalf("pre-snapshot warm entry was lost: address=%v slot=%v", addressOK, slotOK)
+	}
+}
+
 func TestFinaliseResetsRefundAndSnapshotBoundary(t *testing.T) {
 	stateDB := newTestStateDB(t)
 	address := common.HexToAddress("0x5000000000000000000000000000000000000005")
