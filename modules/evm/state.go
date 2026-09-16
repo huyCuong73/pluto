@@ -750,6 +750,9 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 
 // Commit toàn bộ dirty state xuống PebbleDB
 func (s *PebbleStateDB) Commit() error {
+	if s.dbErr != nil {
+		return s.dbErr
+	}
 	batch := s.db.NewBatch()
 	defer batch.Close()
 	if err := s.WriteToBatch(batch); err != nil {
