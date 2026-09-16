@@ -70,6 +70,10 @@ type PebbleStateDB struct {
 	// Cache storage
 	storage      map[common.Address]map[common.Hash]common.Hash
 	dirtyStorage map[common.Address]map[common.Hash]bool // Đánh dấu slot cần commit
+	// originalStorage is the state visible at the beginning of the current
+	// transaction. It advances at Prepare boundaries without flushing the block
+	// overlay to PebbleDB, matching EIP-2200's transaction-original semantics.
+	originalStorage map[common.Address]map[common.Hash]common.Hash
 
 	// Self-destruct
 	selfDestructed map[common.Address]bool
@@ -115,6 +119,7 @@ func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
 		dirtyCode:        make(map[common.Address]bool),
 		storage:          make(map[common.Address]map[common.Hash]common.Hash),
 		dirtyStorage:     make(map[common.Address]map[common.Hash]bool),
+		originalStorage:  make(map[common.Address]map[common.Hash]common.Hash),
 		selfDestructed:   make(map[common.Address]bool),
 		transientStorage: make(map[common.Address]map[common.Hash]common.Hash),
 		logs:             make([]*types.Log, 0),
@@ -370,12 +375,17 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 }
 
 func (s *PebbleStateDB) GetCommittedState(addr common.Address, key common.Hash) common.Hash {
-	// Đọc thẳng từ DB (EIP-2200)
-	data, _ := s.db.Get(storageKey(addr, key))
-	if len(data) == 0 {
-		return common.Hash{}
+	if slots := s.originalStorage[addr]; slots != nil {
+		if value, ok := slots[key]; ok {
+			return value
+		}
 	}
-	return common.BytesToHash(data)
+	value := s.getStorage(addr, key)
+	if s.originalStorage[addr] == nil {
+		s.originalStorage[addr] = make(map[common.Hash]common.Hash)
+	}
+	s.originalStorage[addr][key] = value
+	return value
 }
 
 func (s *PebbleStateDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
@@ -388,6 +398,9 @@ func (s *PebbleStateDB) GetState(addr common.Address, key common.Hash) common.Ha
 
 func (s *PebbleStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
 	prev := s.GetState(addr, key)
+	// Capture the transaction-original value before the first write. This also
+	// covers callers that invoke SetState without first asking for committed state.
+	s.GetCommittedState(addr, key)
 
 	// Journal revert
 	s.journal = append(s.journal, journalEntry{
@@ -534,6 +547,9 @@ func (s *PebbleStateDB) Prepare(rules params.Rules, sender, coinbase common.Addr
 
 	// Reset transient storage (EIP-1153)
 	s.transientStorage = make(map[common.Address]map[common.Hash]common.Hash)
+	// The block overlay remains live, but the EIP-2200 original-value view starts
+	// from the state produced by the preceding transaction.
+	s.originalStorage = make(map[common.Address]map[common.Hash]common.Hash)
 }
 
 func (s *PebbleStateDB) AddressInAccessList(addr common.Address) bool {
@@ -672,6 +688,13 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 			s.markDirty(addr)
 		}
 	}
+
+	// Finalise is the transaction boundary. Reverts cannot cross it and gas
+	// refunds never carry into the next transaction.
+	s.journal = s.journal[:0]
+	s.snapshots = s.snapshots[:0]
+	s.refund = 0
+	s.selfDestructed = make(map[common.Address]bool)
 }
 
 // Commit toàn bộ dirty state xuống PebbleDB
